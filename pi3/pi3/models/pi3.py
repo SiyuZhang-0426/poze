@@ -170,7 +170,45 @@ class Pi3(nn.Module, PyTorchModelHubMixin):
 
         return torch.cat([final_output[0], final_output[1]], dim=-1), pos.reshape(B*N, hw, -1)
     
-    def forward(self, imgs):
+    def _decode_tokens(self, point_hidden, conf_hidden, camera_hidden, H, W, B, N):
+        with torch.amp.autocast(device_type='cuda', enabled=False):
+            point_hidden = point_hidden.float()
+            ret = self.point_head([point_hidden[:, self.patch_start_idx:]], (H, W)).reshape(B, N, H, W, -1)
+            xy, z = ret.split([2, 1], dim=-1)
+            z = torch.exp(z)
+            local_points = torch.cat([xy * z, z], dim=-1)
+
+            conf_hidden = conf_hidden.float()
+            conf = self.conf_head([conf_hidden[:, self.patch_start_idx:]], (H, W)).reshape(B, N, H, W, -1)
+
+            camera_hidden = camera_hidden.float()
+            patch_h, patch_w = H // self.patch_size, W // self.patch_size
+            camera_poses = self.camera_head(camera_hidden[:, self.patch_start_idx:], patch_h, patch_w).reshape(B, N, 4, 4)
+
+            points = torch.einsum('bnij, bnhwj -> bnhwi', camera_poses, homogenize_points(local_points))[..., :3]
+
+        return dict(
+            points=points,
+            local_points=local_points,
+            conf=conf,
+            camera_poses=camera_poses,
+        )
+
+    def decode_from_latents(self, latents):
+        H, W = latents['hw']
+        B = latents.get('batch', 1)
+        N = latents.get('frames', latents['point_tokens'].shape[0] // B)
+        return self._decode_tokens(
+            latents['point_tokens'],
+            latents['conf_tokens'],
+            latents['camera_tokens'],
+            H,
+            W,
+            B,
+            N,
+        )
+
+    def forward(self, imgs, return_latents: bool = False, detach_latents: bool = True):
         imgs = (imgs - self.image_mean) / self.image_std
 
         B, N, _, H, W = imgs.shape
@@ -189,28 +227,22 @@ class Pi3(nn.Module, PyTorchModelHubMixin):
         conf_hidden = self.conf_decoder(hidden, xpos=pos)
         camera_hidden = self.camera_decoder(hidden, xpos=pos)
 
-        with torch.amp.autocast(device_type='cuda', enabled=False):
-            # local points
-            point_hidden = point_hidden.float()
-            ret = self.point_head([point_hidden[:, self.patch_start_idx:]], (H, W)).reshape(B, N, H, W, -1)
-            xy, z = ret.split([2, 1], dim=-1)
-            z = torch.exp(z)
-            local_points = torch.cat([xy * z, z], dim=-1)
+        latents = None
+        if return_latents:
+            def maybe_detach(x):
+                return x.detach() if detach_latents else x
+            latents = dict(
+                decoder_hidden=maybe_detach(hidden),
+                pos=maybe_detach(pos),
+                point_tokens=maybe_detach(point_hidden),
+                conf_tokens=maybe_detach(conf_hidden),
+                camera_tokens=maybe_detach(camera_hidden),
+                hw=(H, W),
+                frames=N,
+                batch=B,
+            )
 
-            # confidence
-            conf_hidden = conf_hidden.float()
-            conf = self.conf_head([conf_hidden[:, self.patch_start_idx:]], (H, W)).reshape(B, N, H, W, -1)
-
-            # camera
-            camera_hidden = camera_hidden.float()
-            camera_poses = self.camera_head(camera_hidden[:, self.patch_start_idx:], patch_h, patch_w).reshape(B, N, 4, 4)
-
-            # unproject local points using camera poses
-            points = torch.einsum('bnij, bnhwj -> bnhwi', camera_poses, homogenize_points(local_points))[..., :3]
-
-        return dict(
-            points=points,
-            local_points=local_points,
-            conf=conf,
-            camera_poses=camera_poses,
-        )
+        outputs = self._decode_tokens(point_hidden, conf_hidden, camera_hidden, H, W, B, N)
+        if latents is not None:
+            outputs['latents'] = latents
+        return outputs

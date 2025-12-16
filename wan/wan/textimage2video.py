@@ -6,7 +6,7 @@ import os
 import random
 import sys
 import types
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from functools import partial
 
 import torch
@@ -45,6 +45,7 @@ class WanTI2V:
         t5_cpu=False,
         init_on_cpu=True,
         convert_model_dtype=False,
+        trainable=False,
     ):
         r"""
         Initializes the Wan text-to-video generation model components.
@@ -80,6 +81,7 @@ class WanTI2V:
 
         self.num_train_timesteps = config.num_train_timesteps
         self.param_dtype = config.param_dtype
+        self.trainable = trainable
 
         if t5_fsdp or dit_fsdp or use_sp:
             self.init_on_cpu = False
@@ -106,7 +108,8 @@ class WanTI2V:
             use_sp=use_sp,
             dit_fsdp=dit_fsdp,
             shard_fn=shard_fn,
-            convert_model_dtype=convert_model_dtype)
+            convert_model_dtype=convert_model_dtype,
+            trainable=trainable)
 
         if use_sp:
             self.sp_size = get_world_size()
@@ -116,7 +119,7 @@ class WanTI2V:
         self.sample_neg_prompt = config.sample_neg_prompt
 
     def _configure_model(self, model, use_sp, dit_fsdp, shard_fn,
-                         convert_model_dtype):
+                         convert_model_dtype, trainable=False):
         """
         Configures a model object. This includes setting evaluation modes,
         applying distributed parallel strategy, and handling device placement.
@@ -139,6 +142,8 @@ class WanTI2V:
                 The configured model.
         """
         model.eval().requires_grad_(False)
+        if trainable:
+            model.train().requires_grad_(True)
 
         if use_sp:
             for block in model.blocks:
@@ -171,7 +176,9 @@ class WanTI2V:
                  guide_scale=5.0,
                  n_prompt="",
                  seed=-1,
-                 offload_model=True):
+                 offload_model=True,
+                 extra_context=None,
+                 enable_grad=False):
         r"""
         Generates video frames from text prompt using diffusion process.
 
@@ -200,6 +207,14 @@ class WanTI2V:
                 Random seed for noise generation. If -1, use random seed.
             offload_model (`bool`, *optional*, defaults to True):
                 If True, offloads models to CPU during generation to save VRAM
+            extra_context (`Tensor`, *optional*, defaults to None):
+                Additional conditioning tokens (B, L, C) appended to text embeddings, e.g. adapted Pi3 latents.
+            enable_grad (`bool`, *optional*, defaults to False):
+                Enable gradient flow through the diffusion model for finetuning scenarios.
+            enable_grad (`bool`, *optional*, defaults to False):
+                Enable gradient flow through the diffusion model for finetuning scenarios.
+            enable_grad (`bool`, *optional*, defaults to False):
+                Enable gradient flow through the diffusion model for finetuning scenarios.
 
         Returns:
             torch.Tensor:
@@ -222,7 +237,9 @@ class WanTI2V:
                 guide_scale=guide_scale,
                 n_prompt=n_prompt,
                 seed=seed,
-                offload_model=offload_model)
+                offload_model=offload_model,
+                extra_context=extra_context,
+                enable_grad=enable_grad)
         # t2v
         return self.t2v(
             input_prompt=input_prompt,
@@ -234,7 +251,9 @@ class WanTI2V:
             guide_scale=guide_scale,
             n_prompt=n_prompt,
             seed=seed,
-            offload_model=offload_model)
+            offload_model=offload_model,
+            extra_context=extra_context,
+            enable_grad=enable_grad)
 
     def t2v(self,
             input_prompt,
@@ -246,7 +265,9 @@ class WanTI2V:
             guide_scale=5.0,
             n_prompt="",
             seed=-1,
-            offload_model=True):
+            offload_model=True,
+            extra_context=None,
+            enable_grad=False):
         r"""
         Generates video frames from text prompt using diffusion process.
 
@@ -271,6 +292,8 @@ class WanTI2V:
                 Random seed for noise generation. If -1, use random seed.
             offload_model (`bool`, *optional*, defaults to True):
                 If True, offloads models to CPU during generation to save VRAM
+            extra_context (`Tensor`, *optional*, defaults to None):
+                Additional conditioning tokens (B, L, C) appended to text embeddings, e.g. adapted Pi3 latents.
 
         Returns:
             torch.Tensor:
@@ -324,11 +347,12 @@ class WanTI2V:
             yield
 
         no_sync = getattr(self.model, 'no_sync', noop_no_sync)
+        grad_context = nullcontext() if enable_grad else torch.no_grad()
 
         # evaluation mode
         with (
                 torch.amp.autocast('cuda', dtype=self.param_dtype),
-                torch.no_grad(),
+                grad_context,
                 no_sync(),
         ):
 
@@ -357,12 +381,14 @@ class WanTI2V:
             latents = noise
             mask1, mask2 = masks_like(noise, zero=False)
 
-            arg_c = {'context': context, 'seq_len': seq_len}
-            arg_null = {'context': context_null, 'seq_len': seq_len}
+        if extra_context is not None:
+            extra_context = extra_context.to(self.device)
+        arg_c = {'context': context, 'seq_len': seq_len, 'extra_context': extra_context}
+        arg_null = {'context': context_null, 'seq_len': seq_len, 'extra_context': extra_context}
 
-            if offload_model or self.init_on_cpu:
-                self.model.to(self.device)
-                torch.cuda.empty_cache()
+        if offload_model or self.init_on_cpu:
+            self.model.to(self.device)
+            torch.cuda.empty_cache()
 
             for _, t in enumerate(tqdm(timesteps)):
                 latent_model_input = latents
@@ -421,7 +447,9 @@ class WanTI2V:
             guide_scale=5.0,
             n_prompt="",
             seed=-1,
-            offload_model=True):
+            offload_model=True,
+            extra_context=None,
+            enable_grad=False):
         r"""
         Generates video frames from input image and text prompt using diffusion process.
 
@@ -449,6 +477,8 @@ class WanTI2V:
                 Random seed for noise generation. If -1, use random seed
             offload_model (`bool`, *optional*, defaults to True):
                 If True, offloads models to CPU during generation to save VRAM
+            extra_context (`Tensor`, *optional*, defaults to None):
+                Additional conditioning tokens (B, L, C) appended to text embeddings, e.g. adapted Pi3 latents.
 
         Returns:
             torch.Tensor:
@@ -516,11 +546,12 @@ class WanTI2V:
             yield
 
         no_sync = getattr(self.model, 'no_sync', noop_no_sync)
+        grad_context = nullcontext() if enable_grad else torch.no_grad()
 
         # evaluation mode
         with (
                 torch.amp.autocast('cuda', dtype=self.param_dtype),
-                torch.no_grad(),
+                grad_context,
                 no_sync(),
         ):
 
@@ -550,14 +581,18 @@ class WanTI2V:
             mask1, mask2 = masks_like([noise], zero=True)
             latent = (1. - mask2[0]) * z[0] + mask2[0] * latent
 
+            if extra_context is not None:
+                extra_context = extra_context.to(self.device)
             arg_c = {
                 'context': [context[0]],
                 'seq_len': seq_len,
+                'extra_context': extra_context,
             }
 
             arg_null = {
                 'context': context_null,
                 'seq_len': seq_len,
+                'extra_context': extra_context,
             }
 
             if offload_model or self.init_on_cpu:
