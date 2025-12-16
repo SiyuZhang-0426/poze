@@ -57,10 +57,10 @@ class Pi3GuidedTI2V(nn.Module):
     ):
         super().__init__()
         self.device = torch.device(device)
-        self.pi3 = Pi3().to(self.device)
         if pi3_checkpoint is None:
             self.pi3 = Pi3.from_pretrained("yyfz233/Pi3").to(self.device)
         else:
+            self.pi3 = Pi3().to(self.device)
             weight = torch.load(pi3_checkpoint, map_location=self.device, weights_only=False)
             self.pi3.load_state_dict(weight)
         self.pi3.eval().requires_grad_(False)
@@ -69,7 +69,7 @@ class Pi3GuidedTI2V(nn.Module):
         self.wan = WanTI2V(
             config=wan_config,
             checkpoint_dir=wan_checkpoint_dir,
-            device_id=device_id if device_id is not None else 0,
+            device_id=device_id,
             rank=0,
             trainable=trainable_wan,
             convert_model_dtype=False,
