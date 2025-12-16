@@ -53,15 +53,22 @@ class Pi3GuidedTI2V(nn.Module):
         adapter_tokens: int = 64,
         device: str = "cuda",
         trainable_wan: bool = False,
+        pi3_pretrained_id: str = "yyfz233/Pi3",
+        pi3_weights_only: bool = True,
         **wan_kwargs: Any,
     ):
         super().__init__()
         self.device = torch.device(device)
         if pi3_checkpoint is None:
-            self.pi3 = Pi3.from_pretrained("yyfz233/Pi3").to(self.device)
+            self.pi3 = Pi3.from_pretrained(pi3_pretrained_id).to(self.device)
         else:
             self.pi3 = Pi3().to(self.device)
-            weight = torch.load(pi3_checkpoint, map_location=self.device, weights_only=True)
+            weight = torch.load(
+                pi3_checkpoint,
+                map_location=self.device,
+                weights_only=pi3_weights_only,
+            )
+            # weights_only avoids executing pickled code; disable only if the checkpoint requires it.
             self.pi3.load_state_dict(weight)
         self.pi3.eval().requires_grad_(False)
 
