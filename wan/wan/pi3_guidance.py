@@ -7,7 +7,7 @@ import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 
 from pi3.models.pi3 import Pi3
-from wan.textimage2video import WanTI2V
+from .textimage2video import WanTI2V
 
 
 class Pi3FeatureAdapter(nn.Module):
@@ -65,7 +65,7 @@ class Pi3GuidedTI2V(nn.Module):
             self.pi3.load_state_dict(weight)
         self.pi3.eval().requires_grad_(False)
 
-        device_id = self.device.index if self.device.type == "cuda" else 0
+        device_id = (self.device.index or 0) if self.device.type == "cuda" else 0
         self.wan = WanTI2V(
             config=wan_config,
             checkpoint_dir=wan_checkpoint_dir,
