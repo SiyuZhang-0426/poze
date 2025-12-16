@@ -1,6 +1,6 @@
 # Poze: Pi3-Guided Wan2.2 TI2V
 
-Poze pairs Pi3 3D reconstruction with Wan2.2 text/image-to-video. Pi3 extracts 3D-aware latents from a reference image; Poze pools those latents into Wan’s context space so Wan can generate videos that stay consistent with the 3D structure.
+Poze (project name) pairs Pi3 3D reconstruction with Wan2.2 text/image-to-video. Pi3 extracts 3D-aware latents from a reference image, and Poze pools those latents into Wan’s context space so Wan can generate videos that stay consistent with the 3D structure.
 
 ## Model implementation (what Poze does)
 - Pi3 runs on the input image and exposes decoder hidden states and patch metadata.
@@ -10,10 +10,10 @@ Poze pairs Pi3 3D reconstruction with Wan2.2 text/image-to-video. Pi3 extracts 3
 
 ## Environment
 - Python ≥3.10, PyTorch ≥2.4 with CUDA.
-- Install dependencies inside `pi3/` and `wan/`:
+- Install dependencies from `pi3/` and `wan/` (run from the repo root):
   ```bash
-  cd pi3 && pip install -r requirements.txt
-  cd ../wan && pip install -r requirements.txt
+  pip install -r pi3/requirements.txt
+  pip install -r wan/requirements.txt
   ```
 
 ## Download checkpoints
@@ -35,10 +35,13 @@ python inference.py \
   --prompt "A drone flythrough of a canyon" \
   --adapter-tokens 64 \
   --device cuda \
-  --offload-model true \
   --output outputs/canyon.mp4
 ```
-`inference.py` saves the mp4 and can optionally dump latents (`--save-latents`) or Pi3 decodes (`--save-pi3`). `--frame-num` overrides the config’s default length.
+`inference.py` saves the output as an mp4. Helpful flags:
+- `--save-latents`: dump latents.
+- `--save-pi3`: save Pi3 decodes.
+- `--frame-num`: override the config’s default video length.
+- `--offload-model`: optional; pass `true` or `false` (common boolean strings like `yes/no/1/0` also work) to control Wan CPU offloading. If omitted, it defaults to true.
 
 ## Finetune
 Finetuning optimizes Wan while keeping Pi3 frozen. Provide at least one supervision signal (`--gt-video` or `--gt-points`).
@@ -53,4 +56,8 @@ python finetune.py \
   --adapter-tokens 64 \
   --save-dir finetune_outputs
 ```
-`finetune.py` uses MSE on video and L1 on Pi3 points (weighted by `--video-weight` / `--point-weight`), supports AMP, optional gradient clipping, and saves checkpoints at `--save-every` or on completion.
+Ground-truth tensors should match the script expectations: video as a torch tensor shaped `(C, F, H, W)` (C=channels, F=frames, H=height, W=width) and Pi3 points as `(B, N, H, W, 3)` (B=batch, N=points, last `3` for XYZ) saved via `.pt`/`.pth`.
+`finetune.py` details:
+- Uses MSE on video and L1 on Pi3 points, weighted by `--video-weight` and `--point-weight`.
+- Supports automatic mixed precision (AMP) and optional gradient clipping.
+- Saves checkpoints at `--save-every` intervals or on completion.
