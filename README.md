@@ -1,62 +1,63 @@
-# Pi3-Guided Wan2.2 TI2V Quickstart
+# Poze: Pi3-Guided Wan2.2 TI2V
 
-This repository combines **Pi3** (3D reconstruction) with **Wan2.2** (text/image-to-video) so Pi3 latents can guide Wan’s TI2V generation and let you compute losses in both video and 3D space.
+Poze (project name) pairs Pi3 3D reconstruction with Wan2.2 text/image-to-video. Pi3 extracts 3D-aware latents from a reference image, and Poze pools those latents into Wan’s context space so Wan can generate videos that stay consistent with the 3D structure.
 
-## What was added
-- Pi3 exposes decoder latents and can decode from saved latents.
-- Wan TI2V accepts optional `extra_context` tokens and can run with gradients enabled.
-- `Pi3GuidedTI2V` adapter pools Pi3 latents, maps them to Wan context space, and drives Wan generation; Pi3 stays frozen while Wan can be finetuned.
+## Model implementation (what Poze does)
+- Pi3 runs on the input image and exposes decoder hidden states and patch metadata.
+- `Pi3FeatureAdapter` reshapes decoder tokens back to a spatial grid, adaptively pools them to a small `target_tokens` grid, and projects them into Wan’s text-embedding dimension.
+- The pooled tokens are sent to Wan TI2V as `extra_context`, giving Wan 3D-aware guidance alongside the text prompt.
+- Pi3 stays frozen by default; Wan can be kept frozen for inference or marked trainable for finetuning. Poze also decodes Pi3 latents to return points/depth/RGB alongside the generated video.
 
 ## Environment
 - Python ≥3.10, PyTorch ≥2.4 with CUDA.
-- Install Pi3 and Wan requirements (from their subfolders) including FlashAttention and VAE dependencies.
+- Install dependencies from `pi3/` and `wan/` (run from the repo root):
+  ```bash
+  pip install -r pi3/requirements.txt
+  pip install -r wan/requirements.txt
+  ```
 
+## Download checkpoints
+`download_checkpoints.py` pulls both Pi3 and Wan2.2 TI2V-5B weights from Hugging Face (set `HF_TOKEN` or pass `--token`).
 ```bash
-# Pi3 deps
-cd pi3 && pip install -r requirements.txt
-# Wan deps
-cd ../wan && pip install -r requirements.txt
+python download_checkpoints.py \
+  --pi3-dir ./pi3_ckpt \
+  --wan-dir ./Wan2.2-TI2V-5B \
+  --token $HF_TOKEN
 ```
+Options: `--pi3-id`, `--wan-id`, and `--revision` allow pointing to custom repos/tags.
 
-## Inference example
-```python
-from wan import configs
-from wan.pi3_guidance import Pi3GuidedTI2V
-
-guide = Pi3GuidedTI2V(
-    wan_config=configs.WAN_CONFIGS["ti2v-5B"],
-    wan_checkpoint_dir="/path/to/wan_ckpts",   # contains Wan2.2 TI2V weights
-    pi3_pretrained_id="yyfz233/Pi3",           # HF id for Pi3
-)
-
-out = guide.generate_with_3d(
-    prompt="A drone flythrough of a canyon",
-    image="frame0.png",
-    frame_num=81,
-)
-
-video = out["video"]                 # (C, F, H, W) tensor
-pointcloud = out["pi3"]["points"]    # (B, N, H, W, 3) world-space points
+## Inference
+Generate a video with Pi3 guidance:
+```bash
+python inference.py \
+  --wan-ckpt-dir ./Wan2.2-TI2V-5B \
+  --image frame0.png \
+  --prompt "A drone flythrough of a canyon" \
+  --adapter-tokens 64 \
+  --device cuda \
+  --output outputs/canyon.mp4
 ```
+`inference.py` saves the output as an mp4. Helpful flags:
+- `--save-latents`: dump latents.
+- `--save-pi3`: save Pi3 decodes.
+- `--frame-num`: override the config’s default video length.
+- `--offload-model`: optional; pass `true` or `false` (common boolean strings like `yes/no/1/0` also work) to control Wan CPU offloading. If omitted, it defaults to true.
 
-## Finetuning hook (optional)
-Set `enable_grad=True` in `generate_with_3d` to allow Wan gradients; Pi3 stays frozen. You can compute custom losses:
-
-```python
-out = guide.training_step(
-    prompt="A walk through a forest",
-    image="ref.png",
-    gt_video=target_video_tensor,     # optional
-    gt_points=target_pointcloud,      # optional
-    video_weight=1.0,
-    point_weight=1.0,
-    frame_num=81,
-    enable_grad=True,
-)
-out["loss"].backward()
+## Finetune
+Finetuning optimizes Wan while keeping Pi3 frozen. Provide at least one supervision signal (`--gt-video` or `--gt-points`).
+```bash
+python finetune.py \
+  --wan-ckpt-dir ./Wan2.2-TI2V-5B \
+  --prompt "A walk through a forest" \
+  --image ref.png \
+  --gt-video data/target_video.pt \
+  --steps 50 \
+  --lr 1e-5 \
+  --adapter-tokens 64 \
+  --save-dir finetune_outputs
 ```
-
-## Notes
-- Checkpoints: pass `wan_checkpoint_dir` for Wan weights. For Pi3, either rely on `pi3_pretrained_id` or provide `pi3_checkpoint`.
-- Safety: custom checkpoints load with `weights_only=True` by default; disable only if the format requires pickled metadata.
-- GPU memory: set `offload_model=True` (default) to reduce VRAM; disable for finetuning to keep gradients resident.
+Ground-truth tensors should match the script expectations: video as a torch tensor shaped `(C, F, H, W)` (C=channels, F=frames, H=height, W=width) and Pi3 points as `(B, N, H, W, 3)` (B=batch, N=points, last `3` for XYZ) saved via `.pt`/`.pth`.
+`finetune.py` details:
+- Uses MSE on video and L1 on Pi3 points, weighted by `--video-weight` and `--point-weight`.
+- Supports automatic mixed precision (AMP) and optional gradient clipping.
+- Saves checkpoints at `--save-every` intervals or on completion.
