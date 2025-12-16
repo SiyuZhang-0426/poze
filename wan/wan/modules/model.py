@@ -470,25 +470,25 @@ class WanModel(ModelMixin, ConfigMixin):
             assert e.dtype == torch.float32 and e0.dtype == torch.float32
 
         # context
-            context = self.text_embedding(
-                torch.stack([
-                    torch.cat(
-                        [u, u.new_zeros(self.text_len - u.size(0), u.size(1))])
-                    for u in context
-                ]))
-            context_lens = None
-            if extra_context is not None:
-                if extra_context.dim() == 2:
-                    extra_context = extra_context.unsqueeze(0)
-                if extra_context.shape[0] != context.shape[0]:
-                    raise ValueError("extra_context batch size must match text context.")
-                extra_context = extra_context.to(context.dtype)
-                context = torch.cat([context, extra_context], dim=1)
-                context_lens = torch.tensor(
-                    [context.shape[1]] * context.shape[0],
-                    device=context.device,
-                    dtype=torch.long,
-                )
+        context = self.text_embedding(
+            torch.stack([
+                torch.cat(
+                    [u, u.new_zeros(self.text_len - u.size(0), u.size(1))])
+                for u in context
+            ]))
+        context_lens = None
+        if extra_context is not None:
+            if extra_context.dim() == 2:
+                extra_context = extra_context.unsqueeze(0)
+            if extra_context.shape[0] != context.shape[0]:
+                raise ValueError("extra_context batch size must match text context.")
+            extra_context = extra_context.to(context.dtype)
+            context = torch.cat([context, extra_context], dim=1)
+            context_lens = torch.tensor(
+                [context.shape[1]] * context.shape[0],
+                device=context.device,
+                dtype=torch.long,
+            )
 
         # arguments
         kwargs = dict(

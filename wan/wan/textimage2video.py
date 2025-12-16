@@ -211,10 +211,6 @@ class WanTI2V:
                 Additional conditioning tokens (B, L, C) appended to text embeddings, e.g. adapted Pi3 latents.
             enable_grad (`bool`, *optional*, defaults to False):
                 Enable gradient flow through the diffusion model for finetuning scenarios.
-            enable_grad (`bool`, *optional*, defaults to False):
-                Enable gradient flow through the diffusion model for finetuning scenarios.
-            enable_grad (`bool`, *optional*, defaults to False):
-                Enable gradient flow through the diffusion model for finetuning scenarios.
 
         Returns:
             torch.Tensor:
@@ -380,9 +376,9 @@ class WanTI2V:
             # sample videos
             latents = noise
             mask1, mask2 = masks_like(noise, zero=False)
+            if extra_context is not None:
+                extra_context = extra_context.to(self.device)
 
-        if extra_context is not None:
-            extra_context = extra_context.to(self.device)
         arg_c = {'context': context, 'seq_len': seq_len, 'extra_context': extra_context}
         arg_null = {'context': context_null, 'seq_len': seq_len, 'extra_context': extra_context}
 
