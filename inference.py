@@ -7,6 +7,7 @@ generates a video guided by Pi3 3D latents, and optionally saves latents.
 """
 import argparse
 import logging
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -99,7 +100,8 @@ def _parse_args() -> argparse.Namespace:
 
 def _default_output_path(args: argparse.Namespace) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    prompt_stub = args.prompt.replace(" ", "_").replace("/", "_")[:50]
+    prompt_stub = re.sub(r"[^\w\-]+", "_", args.prompt).strip("_")
+    prompt_stub = prompt_stub[:50] or "prompt"
     return (REPO_ROOT / "outputs" /
             f"{args.wan_config}_{prompt_stub}_{timestamp}.mp4")
 
@@ -114,8 +116,7 @@ def main():
 
     cfg = configs.WAN_CONFIGS[args.wan_config]
     frame_num = args.frame_num if args.frame_num is not None else cfg.frame_num
-    output_path = args.output if args.output is not None else _default_output_path(
-        args)
+    output_path = args.output or _default_output_path(args)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     logging.info("Loading Pi3-guided Wan TI2V pipeline...")
@@ -140,8 +141,9 @@ def main():
     )
 
     logging.info("Saving video to %s", output_path)
+    video = outputs["video"].unsqueeze(0)
     save_video(
-        tensor=outputs["video"][None],
+        tensor=video,
         save_file=str(output_path),
         fps=cfg.sample_fps,
         nrow=1,

@@ -9,7 +9,7 @@ import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 
 def _add_repo_to_path() -> Path:
@@ -146,14 +146,26 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _load_tensor(path: Optional[str], device: torch.device):
+def _load_tensor(path: Optional[str], device: Union[torch.device, str]):
+    """
+    Load a tensor from disk.
+
+    Args:
+        path: Path to a serialized tensor file. If None, returns None.
+        device: Device mapping passed to torch.load.
+
+    Returns:
+        Loaded torch.Tensor or None when path is None.
+
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        ValueError: If the loaded object is not a tensor.
+    """
     if path is None:
         return None
     tensor_path = Path(path)
     if not tensor_path.exists():
         raise FileNotFoundError(f"Tensor file not found: {tensor_path}")
-    if tensor_path.suffix not in {".pt", ".pth"}:
-        raise ValueError(f"Unsupported tensor format: {tensor_path.suffix}")
     tensor = torch.load(tensor_path, map_location=device)
     if not isinstance(tensor, torch.Tensor):
         raise ValueError(f"Loaded object from {tensor_path} is not a tensor.")
@@ -161,6 +173,12 @@ def _load_tensor(path: Optional[str], device: torch.device):
 
 
 def _validate_targets(gt_video, gt_points):
+    """
+    Ensure at least one supervision signal is provided.
+
+    Raises:
+        ValueError: If both gt_video and gt_points are None.
+    """
     if gt_video is None and gt_points is None:
         raise ValueError("At least one of --gt-video or --gt-points must be provided.")
 
@@ -179,6 +197,7 @@ def main():
 
     cfg = configs.WAN_CONFIGS[args.wan_config]
     frame_num = args.frame_num if args.frame_num is not None else cfg.frame_num
+    target_device = torch.device(args.device)
 
     guide = Pi3GuidedTI2V(
         wan_config=cfg,
@@ -186,17 +205,21 @@ def main():
         pi3_checkpoint=args.pi3_checkpoint,
         pi3_pretrained_id=args.pi3_pretrained_id,
         adapter_tokens=args.adapter_tokens,
-        device=args.device,
+        device=target_device,
         trainable_wan=True,
     )
     guide.wan.model.train()
 
     params = [p for p in guide.wan.model.parameters() if p.requires_grad]
+    if not params:
+        raise RuntimeError(
+            "No Wan parameters are marked trainable. Ensure trainable_wan=True or unfreeze layers."
+        )
     optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.weight_decay)
     scaler = torch.cuda.amp.GradScaler(enabled=args.amp and torch.cuda.is_available())
 
-    gt_video = _load_tensor(args.gt_video, guide.device)
-    gt_points = _load_tensor(args.gt_points, guide.device)
+    gt_video = _load_tensor(args.gt_video, target_device)
+    gt_points = _load_tensor(args.gt_points, target_device)
     _validate_targets(gt_video, gt_points)
 
     pil_image = Image.open(args.image).convert("RGB")
@@ -217,9 +240,6 @@ def main():
             )
             loss = outputs["loss"]
 
-        if not loss.requires_grad:
-            raise RuntimeError("Loss does not require gradients. Ensure Wan is trainable.")
-
         scaler.scale(loss).backward()
         if args.max_grad_norm is not None:
             scaler.unscale_(optimizer)
@@ -228,7 +248,7 @@ def main():
         scaler.update()
 
         if step == 1 or step % args.log_every == 0:
-            loss_items = {k: float(v.detach().cpu()) for k, v in outputs.get("losses", {}).items()}
+            loss_items = {k: v.item() for k, v in outputs.get("losses", {}).items()}
             logging.info(
                 "Step %d/%d - total_loss=%.6f details=%s",
                 step,
