@@ -376,8 +376,8 @@ class WanTI2V:
             # sample videos
             latents = noise
             mask1, mask2 = masks_like(noise, zero=False)
-        if extra_context is not None:
-            extra_context = extra_context.to(self.device)
+            if extra_context is not None:
+                extra_context = extra_context.to(self.device)
         arg_c = {'context': context, 'seq_len': seq_len, 'extra_context': extra_context}
         arg_null = {'context': context_null, 'seq_len': seq_len, 'extra_context': extra_context}
 

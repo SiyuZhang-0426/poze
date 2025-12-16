@@ -61,7 +61,7 @@ class Pi3GuidedTI2V(nn.Module):
             self.pi3 = Pi3.from_pretrained("yyfz233/Pi3").to(self.device)
         else:
             self.pi3 = Pi3().to(self.device)
-            weight = torch.load(pi3_checkpoint, map_location=self.device, weights_only=False)
+            weight = torch.load(pi3_checkpoint, map_location=self.device, weights_only=True)
             self.pi3.load_state_dict(weight)
         self.pi3.eval().requires_grad_(False)
 
