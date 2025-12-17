@@ -82,11 +82,6 @@ class Pi3GuidedTI2V(nn.Module):
             convert_model_dtype=False,
             **wan_kwargs,
         )
-        self.adapter = Pi3FeatureAdapter(
-            in_dim=self.pi3.dec_embed_dim * 2,
-            out_dim=self.wan.model.dim,
-            target_tokens=adapter_tokens,
-        ).to(self.device)
 
     def _prepare_image_inputs(self, image) -> Tuple[torch.Tensor, Any]:
         if isinstance(image, torch.Tensor):
@@ -101,25 +96,31 @@ class Pi3GuidedTI2V(nn.Module):
             tensor = TF.to_tensor(image).unsqueeze(0).unsqueeze(0)
         return tensor.to(self.device), pil
 
-    def _build_guidance(self, latents: Dict[str, Any]) -> torch.Tensor:
+    def _build_latent_volume(self, latents: Dict[str, Any]) -> torch.Tensor:
         patch_h = latents['hw'][0] // self.pi3.patch_size
         patch_w = latents['hw'][1] // self.pi3.patch_size
         tokens = latents['decoder_hidden'][:, self.pi3.patch_start_idx:, :]
-        tokens = tokens.view(latents['batch'], latents['frames'], tokens.size(1), tokens.size(2)).mean(dim=1)
-        return self.adapter(tokens, (patch_h, patch_w))
+        tokens = tokens.view(
+            latents['batch'],
+            latents['frames'],
+            patch_h,
+            patch_w,
+            tokens.size(-1),
+        )
+        return tokens.permute(0, 4, 1, 2, 3).contiguous().detach()
 
     def generate_with_3d(self, prompt: str, image, enable_grad: bool = False, **kwargs) -> Dict[str, Any]:
         imgs, pil_image = self._prepare_image_inputs(image)
         with torch.no_grad():
             pi3_out = self.pi3(imgs, return_latents=True)
         latents = pi3_out['latents']
-        guidance = self._build_guidance(latents)
+        latent_volume = self._build_latent_volume(latents)
         if enable_grad:
             kwargs.setdefault("offload_model", False)
         video = self.wan.generate(
             prompt,
             img=pil_image,
-            extra_context=guidance,
+            video_condition=latent_volume,
             enable_grad=enable_grad,
             **kwargs,
         )
