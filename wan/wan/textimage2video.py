@@ -180,7 +180,8 @@ class WanTI2V:
                  offload_model=True,
                  extra_context=None,
                  video_condition=None,
-                 enable_grad=False):
+                 enable_grad=False,
+                 return_latents: bool = False):
         r"""
         Generates video frames from text prompt using diffusion process.
 
@@ -215,6 +216,8 @@ class WanTI2V:
                 Additional conditioning video latents concatenated channel-wise with the encoded reference image.
             enable_grad (`bool`, *optional*, defaults to False):
                 Enable gradient flow through the diffusion backbone for finetuning scenarios.
+            return_latents (`bool`, *optional*, defaults to False):
+                When True, also return the latent tensor produced by the diffusion loop.
 
         Returns:
             torch.Tensor:
@@ -240,7 +243,8 @@ class WanTI2V:
                 offload_model=offload_model,
                 extra_context=extra_context,
                 video_condition=video_condition,
-                enable_grad=enable_grad)
+                enable_grad=enable_grad,
+                return_latents=return_latents)
         # t2v
         return self.t2v(
             input_prompt=input_prompt,
@@ -255,7 +259,8 @@ class WanTI2V:
             offload_model=offload_model,
             extra_context=extra_context,
             video_condition=video_condition,
-            enable_grad=enable_grad)
+            enable_grad=enable_grad,
+            return_latents=return_latents)
 
     def t2v(self,
             input_prompt,
@@ -269,7 +274,9 @@ class WanTI2V:
             seed=-1,
             offload_model=True,
             extra_context=None,
-            enable_grad=False):
+            video_condition=None,
+            enable_grad=False,
+            return_latents: bool = False):
         r"""
         Generates video frames from text prompt using diffusion process.
 
@@ -296,6 +303,10 @@ class WanTI2V:
                 If True, offloads models to CPU during generation to save VRAM
             extra_context (`Tensor`, *optional*, defaults to None):
                 Additional conditioning tokens (B, L, C) appended to text embeddings, e.g. adapted Pi3 latents.
+            video_condition (`Tensor`, *optional*, defaults to None):
+                Additional conditioning video latents concatenated channel-wise with the encoded reference image.
+            return_latents (`bool`, *optional*, defaults to False):
+                When True, also return the latent tensor produced by the diffusion loop.
 
         Returns:
             torch.Tensor:
@@ -437,7 +448,11 @@ class WanTI2V:
         if dist.is_initialized():
             dist.barrier()
 
-        return videos[0] if self.rank == 0 else None
+        if self.rank != 0:
+            return None
+        if return_latents:
+            return {"video": videos[0], "latent": x0[0]}
+        return videos[0]
 
     def i2v(self,
             input_prompt,
@@ -453,7 +468,8 @@ class WanTI2V:
             offload_model=True,
             extra_context=None,
             video_condition=None,
-            enable_grad=False):
+            enable_grad=False,
+            return_latents: bool = False):
         r"""
         Generates video frames from input image and text prompt using diffusion process.
 

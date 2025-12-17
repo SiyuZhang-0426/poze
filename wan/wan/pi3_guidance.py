@@ -94,15 +94,27 @@ class Pi3GuidedTI2V(nn.Module):
         latent_volume = self._build_latent_volume(latents)
         if enable_grad:
             kwargs.setdefault("offload_model", False)
-        video = self.wan.generate(
+        generated = self.wan.generate(
             prompt,
             img=pil_image,
             video_condition=latent_volume,
             enable_grad=enable_grad,
+            return_latents=True,
             **kwargs,
         )
+        if isinstance(generated, dict):
+            video = generated.get("video")
+            wan_latent = generated.get("latent")
+        else:
+            video = generated
+            wan_latent = None
         pi3_preds = self.pi3.decode_from_latents(latents)
-        return {"video": video, "pi3": pi3_preds, "latents": latents}
+        return {
+            "video": video,
+            "wan_latent": wan_latent,
+            "pi3": pi3_preds,
+            "latents": latents,
+        }
 
     def training_step(
         self,
