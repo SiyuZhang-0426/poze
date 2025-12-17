@@ -1,4 +1,3 @@
-import math
 from typing import Any, Dict, Optional, Tuple
 
 import torch
@@ -8,36 +7,6 @@ import torchvision.transforms.functional as TF
 
 from pi3.models.pi3 import Pi3
 from .textimage2video import WanTI2V
-
-
-class Pi3FeatureAdapter(nn.Module):
-    """
-    Simple adaptive layer to reduce Pi3 decoder tokens and align them with Wan's text embedding space.
-    """
-
-    def __init__(self, in_dim: int, out_dim: int, target_tokens: int = 64):
-        super().__init__()
-        side = max(1, int(math.sqrt(target_tokens)))
-        self.target_hw = (side, max(1, target_tokens // side))
-        self.proj = nn.Sequential(
-            nn.LayerNorm(in_dim),
-            nn.Linear(in_dim, out_dim),
-            nn.GELU(),
-            nn.Linear(out_dim, out_dim),
-        )
-
-    def forward(self, tokens: torch.Tensor, patch_hw: Tuple[int, int]) -> torch.Tensor:
-        """
-        Args:
-            tokens: (B*N, L, C) Pi3 decoder hidden tokens (register tokens should be stripped).
-            patch_hw: (patch_h, patch_w) grid size before tokenization.
-        """
-        ph, pw = patch_hw
-        tokens = tokens[:, :ph * pw, :]
-        grid = tokens.transpose(1, 2).reshape(tokens.size(0), tokens.size(-1), ph, pw)
-        pooled = F.adaptive_avg_pool2d(grid, self.target_hw)
-        pooled = pooled.flatten(2).transpose(1, 2)
-        return self.proj(pooled)
 
 
 class Pi3GuidedTI2V(nn.Module):
@@ -50,7 +19,6 @@ class Pi3GuidedTI2V(nn.Module):
         wan_config,
         wan_checkpoint_dir: str,
         pi3_checkpoint: Optional[str] = None,
-        adapter_tokens: int = 64,
         device: str = "cuda",
         trainable_wan: bool = False,
         pi3_pretrained_id: str = "yyfz233/Pi3",
@@ -82,11 +50,6 @@ class Pi3GuidedTI2V(nn.Module):
             convert_model_dtype=False,
             **wan_kwargs,
         )
-        self.adapter = Pi3FeatureAdapter(
-            in_dim=self.pi3.dec_embed_dim * 2,
-            out_dim=self.wan.model.dim,
-            target_tokens=adapter_tokens,
-        ).to(self.device)
 
     def _prepare_image_inputs(self, image) -> Tuple[torch.Tensor, Any]:
         if isinstance(image, torch.Tensor):
@@ -101,30 +64,57 @@ class Pi3GuidedTI2V(nn.Module):
             tensor = TF.to_tensor(image).unsqueeze(0).unsqueeze(0)
         return tensor.to(self.device), pil
 
-    def _build_guidance(self, latents: Dict[str, Any]) -> torch.Tensor:
+    def _build_latent_volume(self, latents: Dict[str, Any]) -> torch.Tensor:
+        """
+        Reshape Pi3 decoder hidden tokens into a spatial volume aligned with the patch grid.
+
+        Args:
+            latents: Pi3 latent dictionary containing 'decoder_hidden', 'hw', 'batch', and 'frames'.
+
+        Returns:
+            torch.Tensor: A tensor shaped (B, C, F, H, W) representing per-frame spatial latents.
+        """
         patch_h = latents['hw'][0] // self.pi3.patch_size
         patch_w = latents['hw'][1] // self.pi3.patch_size
         tokens = latents['decoder_hidden'][:, self.pi3.patch_start_idx:, :]
-        tokens = tokens.view(latents['batch'], latents['frames'], tokens.size(1), tokens.size(2)).mean(dim=1)
-        return self.adapter(tokens, (patch_h, patch_w))
+        tokens = tokens.view(
+            latents['batch'],
+            latents['frames'],
+            patch_h,
+            patch_w,
+            tokens.size(-1),
+        )
+        return tokens.permute(0, 4, 1, 2, 3).contiguous()
 
     def generate_with_3d(self, prompt: str, image, enable_grad: bool = False, **kwargs) -> Dict[str, Any]:
         imgs, pil_image = self._prepare_image_inputs(image)
         with torch.no_grad():
             pi3_out = self.pi3(imgs, return_latents=True)
         latents = pi3_out['latents']
-        guidance = self._build_guidance(latents)
+        latent_volume = self._build_latent_volume(latents)
         if enable_grad:
             kwargs.setdefault("offload_model", False)
-        video = self.wan.generate(
+        generated = self.wan.generate(
             prompt,
             img=pil_image,
-            extra_context=guidance,
+            video_condition=latent_volume,
             enable_grad=enable_grad,
+            return_latents=True,
             **kwargs,
         )
+        if isinstance(generated, dict):
+            video = generated.get("video")
+            wan_latent = generated.get("latent")
+        else:
+            video = generated
+            wan_latent = None
         pi3_preds = self.pi3.decode_from_latents(latents)
-        return {"video": video, "pi3": pi3_preds, "latents": latents}
+        return {
+            "video": video,
+            "wan_latent": wan_latent,
+            "pi3": pi3_preds,
+            "latents": latents,
+        }
 
     def training_step(
         self,

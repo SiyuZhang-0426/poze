@@ -12,6 +12,7 @@ from functools import partial
 import torch
 import torch.cuda.amp as amp
 import torch.distributed as dist
+import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 from PIL import Image
 from tqdm import tqdm
@@ -178,7 +179,9 @@ class WanTI2V:
                  seed=-1,
                  offload_model=True,
                  extra_context=None,
-                 enable_grad=False):
+                 video_condition=None,
+                 enable_grad=False,
+                 return_latents: bool = False):
         r"""
         Generates video frames from text prompt using diffusion process.
 
@@ -209,10 +212,12 @@ class WanTI2V:
                 If True, offloads models to CPU during generation to save VRAM
             extra_context (`Tensor`, *optional*, defaults to None):
                 Additional conditioning tokens (B, L, C) appended to text embeddings, e.g. adapted Pi3 latents.
+            video_condition (`Tensor`, *optional*, defaults to None):
+                Additional conditioning video latents concatenated channel-wise with the encoded reference image.
             enable_grad (`bool`, *optional*, defaults to False):
                 Enable gradient flow through the diffusion backbone for finetuning scenarios.
-            enable_grad (`bool`, *optional*, defaults to False):
-                Enable gradient flow through the diffusion model for finetuning scenarios.
+            return_latents (`bool`, *optional*, defaults to False):
+                When True, also return the latent tensor produced by the diffusion loop.
 
         Returns:
             torch.Tensor:
@@ -237,7 +242,9 @@ class WanTI2V:
                 seed=seed,
                 offload_model=offload_model,
                 extra_context=extra_context,
-                enable_grad=enable_grad)
+                video_condition=video_condition,
+                enable_grad=enable_grad,
+                return_latents=return_latents)
         # t2v
         return self.t2v(
             input_prompt=input_prompt,
@@ -251,7 +258,9 @@ class WanTI2V:
             seed=seed,
             offload_model=offload_model,
             extra_context=extra_context,
-            enable_grad=enable_grad)
+            video_condition=video_condition,
+            enable_grad=enable_grad,
+            return_latents=return_latents)
 
     def t2v(self,
             input_prompt,
@@ -265,7 +274,9 @@ class WanTI2V:
             seed=-1,
             offload_model=True,
             extra_context=None,
-            enable_grad=False):
+            video_condition=None,
+            enable_grad=False,
+            return_latents: bool = False):
         r"""
         Generates video frames from text prompt using diffusion process.
 
@@ -292,6 +303,10 @@ class WanTI2V:
                 If True, offloads models to CPU during generation to save VRAM
             extra_context (`Tensor`, *optional*, defaults to None):
                 Additional conditioning tokens (B, L, C) appended to text embeddings, e.g. adapted Pi3 latents.
+            video_condition (`Tensor`, *optional*, defaults to None):
+                Additional conditioning video latents concatenated channel-wise with the encoded reference image.
+            return_latents (`bool`, *optional*, defaults to False):
+                When True, also return the latent tensor produced by the diffusion loop.
 
         Returns:
             torch.Tensor:
@@ -433,7 +448,11 @@ class WanTI2V:
         if dist.is_initialized():
             dist.barrier()
 
-        return videos[0] if self.rank == 0 else None
+        if self.rank != 0:
+            return None
+        if return_latents:
+            return {"video": videos[0], "latent": x0[0]}
+        return videos[0]
 
     def i2v(self,
             input_prompt,
@@ -448,7 +467,9 @@ class WanTI2V:
             seed=-1,
             offload_model=True,
             extra_context=None,
-            enable_grad=False):
+            video_condition=None,
+            enable_grad=False,
+            return_latents: bool = False):
         r"""
         Generates video frames from input image and text prompt using diffusion process.
 
@@ -478,6 +499,8 @@ class WanTI2V:
                 If True, offloads models to CPU during generation to save VRAM
             extra_context (`Tensor`, *optional*, defaults to None):
                 Additional conditioning tokens (B, L, C) appended to text embeddings, e.g. adapted Pi3 latents.
+            video_condition (`Tensor`, *optional*, defaults to None):
+                Extra conditioning video latents concatenated with the encoded reference image along channels.
 
         Returns:
             torch.Tensor:
@@ -539,6 +562,28 @@ class WanTI2V:
             context_null = [t.to(self.device) for t in context_null]
 
         z = self.vae.encode([img])
+        cond_latent = z[0]
+        if video_condition is not None:
+            cond = video_condition
+            if isinstance(cond, list):
+                cond = cond[0]
+            if cond.dim() not in (4, 5):
+                raise ValueError(
+                    "video_condition must have shape (C, F, H, W) or (B, C, F, H, W)."
+                )
+            if cond.dim() == 5:
+                cond = cond[0]
+            cond = cond.to(device=self.device, dtype=cond_latent.dtype)
+            if cond.shape[1:] != cond_latent.shape[1:]:
+                cond = F.interpolate(
+                    cond.unsqueeze(0),
+                    size=cond_latent.shape[1:],
+                    mode="trilinear",
+                    align_corners=False,
+                ).squeeze(0)
+            # Fuse encoded RGB latents with Pi3 spatial latents along the channel dimension.
+            cond_latent = torch.cat([cond_latent, cond], dim=0)
+        cond_inputs = [cond_latent]
 
         @contextmanager
         def noop_no_sync():
@@ -612,11 +657,11 @@ class WanTI2V:
                 timestep = temp_ts.unsqueeze(0)
 
                 noise_pred_cond = self.model(
-                    latent_model_input, t=timestep, **arg_c)[0]
+                    latent_model_input, t=timestep, y=cond_inputs, **arg_c)[0]
                 if offload_model:
                     torch.cuda.empty_cache()
                 noise_pred_uncond = self.model(
-                    latent_model_input, t=timestep, **arg_null)[0]
+                    latent_model_input, t=timestep, y=cond_inputs, **arg_null)[0]
                 if offload_model:
                     torch.cuda.empty_cache()
                 noise_pred = noise_pred_uncond + guide_scale * (

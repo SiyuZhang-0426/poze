@@ -75,11 +75,6 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Number of frames to generate. Defaults to config.frame_num.")
     parser.add_argument(
-        "--adapter-tokens",
-        type=int,
-        default=64,
-        help="How many pooled Pi3 tokens to feed into Wan context.")
-    parser.add_argument(
         "--video-weight",
         type=float,
         default=1.0,
@@ -204,7 +199,6 @@ def main():
         wan_checkpoint_dir=args.wan_ckpt_dir,
         pi3_checkpoint=args.pi3_checkpoint,
         pi3_pretrained_id=args.pi3_pretrained_id,
-        adapter_tokens=args.adapter_tokens,
         device=target_device,
         trainable_wan=True,
     )

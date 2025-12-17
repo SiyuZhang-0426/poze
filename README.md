@@ -4,8 +4,8 @@ Poze (project name) pairs Pi3 3D reconstruction with Wan2.2 text/image-to-video.
 
 ## Model implementation (what Poze does)
 - Pi3 runs on the input image and exposes decoder hidden states and patch metadata.
-- `Pi3FeatureAdapter` reshapes decoder tokens back to a spatial grid, adaptively pools them to a small `target_tokens` grid, and projects them into Wan’s text-embedding dimension.
-- The pooled tokens are sent to Wan TI2V as `extra_context`, giving Wan 3D-aware guidance alongside the text prompt.
+- The Pi3 decoder tokens are reshaped back to a spatial grid, resized to Wan’s latent resolution, and concatenated channel-wise with the encoded RGB latents before diffusion (no `extra_context` tokens).
+- Wan receives this fused latent volume together with the text prompt to generate a temporally consistent video.
 - Pi3 stays frozen by default; Wan can be kept frozen for inference or marked trainable for finetuning. Poze also decodes Pi3 latents to return points/depth/RGB alongside the generated video.
 
 ## Environment
@@ -33,7 +33,6 @@ python inference.py \
   --wan-ckpt-dir ./Wan2.2-TI2V-5B \
   --image frame0.png \
   --prompt "A drone flythrough of a canyon" \
-  --adapter-tokens 64 \
   --device cuda \
   --output outputs/canyon.mp4
 ```
@@ -53,7 +52,6 @@ python finetune.py \
   --gt-video data/target_video.pt \
   --steps 50 \
   --lr 1e-5 \
-  --adapter-tokens 64 \
   --save-dir finetune_outputs
 ```
 Ground-truth tensors should match the script expectations: video as a torch tensor shaped `(C, F, H, W)` (C=channels, F=frames, H=height, W=width) and Pi3 points as `(B, N, H, W, 3)` (B=batch, N=points, last `3` for XYZ) saved via `.pt`/`.pth`.
