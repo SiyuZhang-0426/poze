@@ -215,8 +215,6 @@ class WanTI2V:
                 Additional conditioning video latents concatenated channel-wise with the encoded reference image.
             enable_grad (`bool`, *optional*, defaults to False):
                 Enable gradient flow through the diffusion backbone for finetuning scenarios.
-            enable_grad (`bool`, *optional*, defaults to False):
-                Enable gradient flow through the diffusion model for finetuning scenarios.
 
         Returns:
             torch.Tensor:
@@ -553,19 +551,22 @@ class WanTI2V:
             cond = video_condition
             if isinstance(cond, list):
                 cond = cond[0]
+            if cond.dim() not in (4, 5):
+                raise ValueError(
+                    "video_condition must have shape (C, F, H, W) or (B, C, F, H, W)."
+                )
             if cond.dim() == 5:
                 cond = cond[0]
-            if cond.dim() == 4:
-                cond = cond.unsqueeze(0)
             cond = cond.to(device=self.device, dtype=cond_latent.dtype)
-            if cond.shape[2:] != cond_latent.shape[1:]:
+            if cond.shape[1:] != cond_latent.shape[1:]:
                 cond = F.interpolate(
-                    cond,
+                    cond.unsqueeze(0),
                     size=cond_latent.shape[1:],
                     mode="trilinear",
                     align_corners=False,
-                )
-            cond_latent = torch.cat([cond_latent, cond.squeeze(0)], dim=0)
+                ).squeeze(0)
+            # Fuse encoded RGB latents with Pi3 spatial latents along the channel dimension.
+            cond_latent = torch.cat([cond_latent, cond], dim=0)
         cond_inputs = [cond_latent]
 
         @contextmanager
