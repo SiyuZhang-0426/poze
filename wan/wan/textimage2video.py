@@ -565,7 +565,7 @@ class WanTI2V:
 
         z = self.vae.encode([img])
         cond_latent = z[0]
-        fused_latent = None
+        fused_latent = cond_latent
         pi3_condition_adapted = None
         if video_condition is not None:
             cond = video_condition
@@ -594,11 +594,11 @@ class WanTI2V:
             )
             if can_project:
                 cond = self.latent_adapter(cond.unsqueeze(0)).squeeze(0)
-            pi3_condition_adapted = cond
+                pi3_condition_adapted = cond
+            else:
+                pi3_condition_adapted = cond
             # Concatenate RGB and adapted Pi3 latents for joint conditioning.
             fused_latent = torch.cat([cond_latent, cond], dim=0)
-        else:
-            fused_latent = cond_latent
         cond_inputs = [fused_latent]
 
         @contextmanager
