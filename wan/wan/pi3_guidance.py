@@ -31,11 +31,11 @@ class Pi3GuidedTI2V(nn.Module):
             self.pi3 = Pi3.from_pretrained(pi3_pretrained_id).to(self.device)
         else:
             self.pi3 = Pi3().to(self.device)
-            weight = torch.load(
-                pi3_checkpoint,
-                map_location=self.device,
-                weights_only=pi3_weights_only,
-            )
+            if pi3_checkpoint.endswith('.safetensors'):
+                from safetensors.torch import load_file
+                weight = load_file(pi3_checkpoint)
+            else:
+                weight = torch.load(pi3_checkpoint, map_location=self.device, weights_only=False)
             # weights_only avoids executing pickled code; disable only if the checkpoint requires it.
             self.pi3.load_state_dict(weight)
         self.pi3.eval().requires_grad_(False)
