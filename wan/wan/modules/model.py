@@ -461,23 +461,13 @@ class WanModel(ModelMixin, ConfigMixin):
                 aligned_conditioning.append(v)
             merged_inputs = []
             expected_channels = self.patch_embedding.in_channels
-            if not hasattr(self, "_pad_cache"):
-                self._pad_cache = {}
             for u, v in zip(x, aligned_conditioning):
                 fused = torch.cat([u, v], dim=0)
-                if fused.shape[0] < expected_channels:
-                    pad_channels = expected_channels - fused.shape[0]
-                    pad_key = (pad_channels, fused.shape[1:], fused.device,
-                               fused.dtype)
-                    pad_cache = self._pad_cache.get(pad_key)
-                    if pad_cache is None or pad_cache.shape != (
-                            pad_channels, *fused.shape[1:]):
-                        pad_cache = fused.new_zeros(pad_channels,
-                                                    *fused.shape[1:])
-                        self._pad_cache[pad_key] = pad_cache
-                    fused = torch.cat([fused, pad_cache], dim=0)
-                elif fused.shape[0] > expected_channels:
-                    fused = fused[:expected_channels]
+                if fused.shape[0] != expected_channels:
+                    raise ValueError(
+                        f"Conditioned channels mismatch: patch_embedding expects {expected_channels} total "
+                        f"but received base {u.shape[0]} and conditioning {v.shape[0]} "
+                        f"(sum={fused.shape[0]}).")
                 merged_inputs.append(fused)
             x = merged_inputs
 

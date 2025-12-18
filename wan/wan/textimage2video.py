@@ -594,12 +594,9 @@ class WanTI2V:
             )
             if can_project:
                 cond = self.latent_adapter(cond.unsqueeze(0)).squeeze(0)
-                pi3_condition_adapted = cond
-            else:
-                pi3_condition_adapted = cond
-            # Concatenate RGB and adapted Pi3 latents for joint conditioning.
+            pi3_condition_adapted = cond
             fused_latent = torch.cat([cond_latent, cond], dim=0)
-        cond_inputs = [fused_latent]
+        cond_inputs = [pi3_condition_adapted] if pi3_condition_adapted is not None else None
 
         @contextmanager
         def noop_no_sync():
@@ -716,14 +713,18 @@ class WanTI2V:
         if self.rank != 0:
             return None
         if return_latents:
-            rgb_latent = output_latent[:self.vae.model.z_dim]
+            base_channels = cond_latent.shape[0]
+            extra_channels = pi3_condition_adapted.shape[0] if pi3_condition_adapted is not None else 0
+            rgb_latent = output_latent[:base_channels]
+            pi3_latent_out = output_latent[base_channels:base_channels +
+                                           extra_channels] if extra_channels > 0 else None
             result = {
                 "video": output_video,
                 "latent": output_latent,
                 "rgb_latent": rgb_latent,
                 "conditioning_latent": fused_latent,
             }
-            if pi3_condition_adapted is not None:
-                result["pi3_latent"] = pi3_condition_adapted
+            if pi3_latent_out is not None:
+                result["pi3_latent"] = pi3_latent_out
             return result
         return output_video
