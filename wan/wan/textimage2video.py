@@ -577,7 +577,7 @@ class WanTI2V:
                 cond = cond[0]
             cond = cond.to(device=self.device, dtype=cond_latent.dtype)
             if cond.shape[1:] != cond_latent.shape[1:]:
-                cond = F.interpolate(
+                cond = torch.nn.functional.interpolate(
                     cond.unsqueeze(0),
                     size=cond_latent.shape[1:],
                     mode="trilinear",
