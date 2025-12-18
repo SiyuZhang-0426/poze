@@ -444,7 +444,7 @@ class WanModel(ModelMixin, ConfigMixin):
             self.freqs = self.freqs.to(device)
 
         if y is not None:
-            aligned_y = []
+            aligned_conditioning = []
             for u, v in zip(x, y):
                 if v.shape[1:] != u.shape[1:]:
                     v = F.interpolate(
@@ -452,8 +452,11 @@ class WanModel(ModelMixin, ConfigMixin):
                         size=u.shape[1:],
                         mode='trilinear',
                         align_corners=False).squeeze(0)
-                aligned_y.append(v)
-            x = [torch.cat([u, v], dim=0) for u, v in zip(x, aligned_y)]
+                aligned_conditioning.append(v)
+            x = [
+                torch.cat([u, v], dim=0)
+                for u, v in zip(x, aligned_conditioning)
+            ]
 
         # embeddings
         x = [self.patch_embedding(u.unsqueeze(0)) for u in x]
