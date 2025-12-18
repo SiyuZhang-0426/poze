@@ -3,6 +3,7 @@ import math
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.models.modeling_utils import ModelMixin
 
@@ -443,7 +444,16 @@ class WanModel(ModelMixin, ConfigMixin):
             self.freqs = self.freqs.to(device)
 
         if y is not None:
-            x = [torch.cat([u, v], dim=0) for u, v in zip(x, y)]
+            aligned_y = []
+            for u, v in zip(x, y):
+                if v.shape[1:] != u.shape[1:]:
+                    v = F.interpolate(
+                        v.unsqueeze(0),
+                        size=u.shape[1:],
+                        mode='trilinear',
+                        align_corners=False).squeeze(0)
+                aligned_y.append(v)
+            x = [torch.cat([u, v], dim=0) for u, v in zip(x, aligned_y)]
 
         # embeddings
         x = [self.patch_embedding(u.unsqueeze(0)) for u in x]
