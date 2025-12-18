@@ -3,6 +3,7 @@ import math
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.models.modeling_utils import ModelMixin
 
@@ -443,7 +444,24 @@ class WanModel(ModelMixin, ConfigMixin):
             self.freqs = self.freqs.to(device)
 
         if y is not None:
-            x = [torch.cat([u, v], dim=0) for u, v in zip(x, y)]
+            aligned_conditioning = []
+            for u, v in zip(x, y):
+                if v.dim() != 4:
+                    raise ValueError(
+                        f"Conditioning latents must have shape (channels, frames, height, width), got shape {tuple(v.shape)} with {v.dim()} dimensions."
+                    )
+                if v.shape[1:] != u.shape[1:]:
+                    # Align conditioning latents in NCDHW order for F.interpolate
+                    v = F.interpolate(
+                        v.unsqueeze(0),
+                        size=u.shape[1:],
+                        mode='trilinear',
+                        align_corners=False).squeeze(0)
+                aligned_conditioning.append(v)
+            x = [
+                torch.cat([u, v], dim=0)
+                for u, v in zip(x, aligned_conditioning)
+            ]
 
         # embeddings
         x = [self.patch_embedding(u.unsqueeze(0)) for u in x]
