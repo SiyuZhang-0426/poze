@@ -172,8 +172,7 @@ class Pi3GuidedTI2V(nn.Module):
             rgb_latent = None
             pi3_condition_latent = None
         if rgb_latent is not None:
-            decoded_video = self.wan.vae.decode([rgb_latent])[0]
-            video = decoded_video
+            video = self.wan.vae.decode([rgb_latent])[0]
         pi3_preds = self.pi3.decode_from_latents(latents)
         return {
             "video": video,
