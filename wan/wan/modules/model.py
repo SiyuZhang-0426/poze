@@ -446,6 +446,9 @@ class WanModel(ModelMixin, ConfigMixin):
         if y is not None:
             aligned_conditioning = []
             for u, v in zip(x, y):
+                if v.dim() != 4:
+                    raise ValueError(
+                        "Conditioning latents must have shape (C, F, H, W).")
                 if v.shape[1:] != u.shape[1:]:
                     v = F.interpolate(
                         v.unsqueeze(0),
