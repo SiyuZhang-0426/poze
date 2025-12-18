@@ -448,7 +448,8 @@ class WanModel(ModelMixin, ConfigMixin):
             for u, v in zip(x, y):
                 if v.dim() != 4:
                     raise ValueError(
-                        "Conditioning latents must have shape (C, F, H, W).")
+                        f"Conditioning latents must have shape (C, F, H, W), got shape {tuple(v.shape)} with {v.dim()} dimensions."
+                    )
                 if v.shape[1:] != u.shape[1:]:
                     v = F.interpolate(
                         v.unsqueeze(0),
