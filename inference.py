@@ -37,12 +37,14 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--wan-ckpt-dir",
         required=True,
-        help="Directory containing Wan2.2 TI2V checkpoints.")
+        help="Directory containing Wan2.2 TI2V checkpoints."
+    )
     parser.add_argument(
         "--wan-config",
         default="ti2v-5B",
         choices=list(configs.WAN_CONFIGS.keys()),
-        help="Wan TI2V config key to load.")
+        help="Wan TI2V config key to load."
+    )
     parser.add_argument(
         "--pi3-checkpoint",
         default=None,
@@ -51,24 +53,29 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--pi3-pretrained-id",
         default="yyfz233/Pi3",
-        help="HuggingFace model id for Pi3 when no checkpoint is provided.")
+        help="HuggingFace model id for Pi3 when no checkpoint is provided."
+    )
     parser.add_argument(
         "--prompt",
         default="A drone flythrough of a canyon",
-        help="Text prompt for generation.")
+        help="Text prompt for generation."
+    )
     parser.add_argument(
         "--image",
         required=True,
-        help="Reference image path used for TI2V conditioning.")
+        help="Reference image path used for TI2V conditioning."
+    )
     parser.add_argument(
         "--frame-num",
         type=int,
         default=None,
-        help="Number of frames to generate. Defaults to config.frame_num.")
+        help="Number of frames to generate. Defaults to config.frame_num."
+    )
     parser.add_argument(
         "--device",
         default="cuda",
-        help="Device string passed to Pi3GuidedTI2V, e.g., cuda or cpu.")
+        help="Device string passed to Pi3GuidedTI2V, e.g., cuda or cpu."
+    )
     parser.add_argument(
         "--offload-model",
         type=str2bool,
@@ -79,17 +86,20 @@ def _parse_args() -> argparse.Namespace:
         "--output",
         type=Path,
         default=None,
-        help="Path to save the generated video (mp4).")
+        help="Path to save the generated video (mp4)."
+    )
     parser.add_argument(
         "--save-latents",
         type=Path,
         default=None,
-        help="Optional path to torch.save the returned latents dict.")
+        help="Optional path to torch.save the returned latents dict."
+    )
     parser.add_argument(
         "--save-pi3",
         type=Path,
         default=None,
-        help="Optional path to torch.save the Pi3 decode outputs (points/depth/rgb).")
+        help="Optional path to torch.save the Pi3 decode outputs (points/depth/rgb)."
+    )
     return parser.parse_args()
 
 
@@ -141,6 +151,8 @@ def main():
         save_file=str(output_path),
         fps=cfg.sample_fps,
         nrow=1,
+        normalize=True,
+        value_range=(-1, 1),
     )
 
     if args.save_latents is not None:
