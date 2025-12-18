@@ -318,8 +318,9 @@ class WanTI2V:
                 - W: Frame width from size)
         """
         # preprocess
-        F = frame_num
-        target_shape = (self.vae.model.z_dim, (F - 1) // self.vae_stride[0] + 1,
+        frame_count = frame_num
+        target_shape = (self.vae.model.z_dim,
+                        (frame_count - 1) // self.vae_stride[0] + 1,
                         size[1] // self.vae_stride[1],
                         size[0] // self.vae_stride[2])
 
@@ -529,8 +530,8 @@ class WanTI2V:
         # to tensor
         img = TF.to_tensor(img).sub_(0.5).div_(0.5).to(self.device).unsqueeze(1)
 
-        F = frame_num
-        seq_len = ((F - 1) // self.vae_stride[0] + 1) * (
+        frame_count = frame_num
+        seq_len = ((frame_count - 1) // self.vae_stride[0] + 1) * (
             oh // self.vae_stride[1]) * (ow // self.vae_stride[2]) // (
                 self.patch_size[1] * self.patch_size[2])
         seq_len = int(math.ceil(seq_len / self.sp_size)) * self.sp_size
@@ -539,7 +540,7 @@ class WanTI2V:
         seed_g = torch.Generator(device=self.device)
         seed_g.manual_seed(seed)
         noise = torch.randn(
-            self.vae.model.z_dim, (F - 1) // self.vae_stride[0] + 1,
+            self.vae.model.z_dim, (frame_count - 1) // self.vae_stride[0] + 1,
             oh // self.vae_stride[1],
             ow // self.vae_stride[2],
             dtype=torch.float32,
