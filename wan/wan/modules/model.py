@@ -462,26 +462,14 @@ class WanModel(ModelMixin, ConfigMixin):
             merged_inputs = []
             expected_channels = self.patch_embedding.in_channels
             for u, v in zip(x, aligned_conditioning):
-                if u.shape[0] > expected_channels:
-                    raise ValueError(
-                        f"Base latent channels exceed patch_embedding expectation: "
-                        f"expected at most {expected_channels}, got {u.shape[0]}."
-                    )
-                if u.shape[0] + v.shape[0] == expected_channels:
-                    merged_inputs.append(torch.cat([u, v], dim=0))
-                elif u.shape[0] == expected_channels:
-                    if v.shape[0] != u.shape[0]:
-                        raise ValueError(
-                            f"Conditioning channels must match base channels for additive fusion: "
-                            f"base has {u.shape[0]} channels, got {v.shape[0]} conditioning channels."
-                        )
-                    merged_inputs.append(u + v)
-                else:
-                    raise ValueError(
-                        f"Conditioned channels mismatch: patch_embedding expects {expected_channels} total "
-                        f"but received base {u.shape[0]} and conditioning {v.shape[0]} "
-                        f"(sum={u.shape[0] + v.shape[0]})."
-                    )
+                fused = torch.cat([u, v], dim=0)
+                if fused.shape[0] < expected_channels:
+                    pad = fused.new_zeros(
+                        expected_channels - fused.shape[0], *fused.shape[1:])
+                    fused = torch.cat([fused, pad], dim=0)
+                elif fused.shape[0] > expected_channels:
+                    fused = fused[:expected_channels]
+                merged_inputs.append(fused)
             x = merged_inputs
 
         # embeddings

@@ -565,6 +565,7 @@ class WanTI2V:
 
         z = self.vae.encode([img])
         cond_latent = z[0]
+        pi3_condition_latent = None
         if video_condition is not None:
             cond = video_condition
             if isinstance(cond, list):
@@ -592,12 +593,11 @@ class WanTI2V:
             )
             if can_project:
                 cond = self.latent_adapter(cond.unsqueeze(0)).squeeze(0)
-                cond_latent = cond_latent + cond
-            else:
-                # Fall back to concatenation when no adapter is set or channel counts differ.
-                # Fuse encoded RGB latents with Pi3 spatial latents along the channel dimension.
-                cond_latent = torch.cat([cond_latent, cond], dim=0)
-        cond_inputs = [cond_latent]
+            pi3_condition_latent = cond
+            fused_latent = torch.cat([cond_latent, cond], dim=0)
+        else:
+            fused_latent = cond_latent
+        cond_inputs = [fused_latent]
 
         @contextmanager
         def noop_no_sync():
@@ -701,6 +701,8 @@ class WanTI2V:
             if self.rank == 0:
                 videos = self.vae.decode(x0)
 
+        output_video = videos[0] if self.rank == 0 else None
+        output_latent = x0[0] if self.rank == 0 else None
         del noise, latent, x0
         del sample_scheduler
         if offload_model:
@@ -709,4 +711,17 @@ class WanTI2V:
         if dist.is_initialized():
             dist.barrier()
 
-        return videos[0] if self.rank == 0 else None
+        if self.rank != 0:
+            return None
+        if return_latents:
+            rgb_latent = output_latent[:self.vae.model.z_dim]
+            result = {
+                "video": output_video,
+                "latent": output_latent,
+                "rgb_latent": rgb_latent,
+                "conditioning_latent": fused_latent,
+            }
+            if pi3_condition_latent is not None:
+                result["pi3_latent"] = pi3_condition_latent
+            return result
+        return output_video
