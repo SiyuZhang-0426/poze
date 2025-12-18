@@ -456,12 +456,33 @@ class WanModel(ModelMixin, ConfigMixin):
                         v.unsqueeze(0),
                         size=u.shape[1:],
                         mode='trilinear',
-                        align_corners=False).squeeze(0)
+                        align_corners=False,
+                    ).squeeze(0)
                 aligned_conditioning.append(v)
-            x = [
-                torch.cat([u, v], dim=0)
-                for u, v in zip(x, aligned_conditioning)
-            ]
+            merged_inputs = []
+            expected_channels = self.patch_embedding.in_channels
+            for u, v in zip(x, aligned_conditioning):
+                if u.shape[0] > expected_channels:
+                    raise ValueError(
+                        f"Base latent channels exceed patch_embedding expectation: "
+                        f"expected at most {expected_channels}, got {u.shape[0]}."
+                    )
+                if u.shape[0] + v.shape[0] == expected_channels:
+                    merged_inputs.append(torch.cat([u, v], dim=0))
+                elif u.shape[0] == expected_channels:
+                    if v.shape[0] != u.shape[0]:
+                        raise ValueError(
+                            f"Conditioning channels must match base channels for additive fusion: "
+                            f"base has {u.shape[0]} channels, got {v.shape[0]} conditioning channels."
+                        )
+                    merged_inputs.append(u + v)
+                else:
+                    raise ValueError(
+                        f"Conditioned channels mismatch: patch_embedding expects {expected_channels} total "
+                        f"but received base {u.shape[0]} and conditioning {v.shape[0]} "
+                        f"(sum={u.shape[0] + v.shape[0]})."
+                    )
+            x = merged_inputs
 
         # embeddings
         x = [self.patch_embedding(u.unsqueeze(0)) for u in x]
