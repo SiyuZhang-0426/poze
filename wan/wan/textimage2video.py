@@ -83,6 +83,7 @@ class WanTI2V:
         self.num_train_timesteps = config.num_train_timesteps
         self.param_dtype = config.param_dtype
         self.trainable = trainable
+        self.latent_adapter = None
 
         if t5_fsdp or dit_fsdp or use_sp:
             self.init_on_cpu = False
@@ -581,8 +582,20 @@ class WanTI2V:
                     mode="trilinear",
                     align_corners=False,
                 ).squeeze(0)
-            # Fuse encoded RGB latents with Pi3 spatial latents along the channel dimension.
-            cond_latent = torch.cat([cond_latent, cond], dim=0)
+            cond_c, cond_f, cond_h, cond_w = cond.shape
+            latent_c, latent_f, latent_h, latent_w = cond_latent.shape
+            can_project = (
+                self.latent_adapter is not None
+                and cond_c == self.latent_adapter.in_channels
+                and (cond_f, cond_h, cond_w) == (latent_f, latent_h, latent_w)
+            )
+            if can_project:
+                cond = self.latent_adapter(cond.unsqueeze(0)).squeeze(0)
+                cond_latent = cond_latent + cond
+            else:
+                # Fall back to concatenation when no adapter is set or channel counts differ.
+                # Fuse encoded RGB latents with Pi3 spatial latents along the channel dimension.
+                cond_latent = torch.cat([cond_latent, cond], dim=0)
         cond_inputs = [cond_latent]
 
         @contextmanager

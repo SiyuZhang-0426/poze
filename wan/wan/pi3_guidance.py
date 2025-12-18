@@ -1,3 +1,4 @@
+import math
 from typing import Any, Dict, Optional, Tuple
 
 import torch
@@ -50,6 +51,57 @@ class Pi3GuidedTI2V(nn.Module):
             convert_model_dtype=False,
             **wan_kwargs,
         )
+        # Pi3 decoder latents concatenate the last two blocks, giving 2 * dec_embed_dim channels.
+        # The adapter expects that full volume as input before projecting into the VAE latent space.
+        pi3_channel_dim = 2 * self.pi3.dec_embed_dim
+        self.latent_adapter = nn.Conv3d(
+            in_channels=pi3_channel_dim,
+            out_channels=self.wan.vae.model.z_dim,
+            kernel_size=1,
+        ).to(self.device)
+        with torch.no_grad():
+            # Seed with a channel-copy identity so image latents stay intact while Pi3 features are blended in.
+            self.latent_adapter.weight.zero_()
+            if self.latent_adapter.bias is not None:
+                self.latent_adapter.bias.zero_()
+            shared = min(
+                self.latent_adapter.in_channels,
+                self.latent_adapter.out_channels,
+            )
+            for i in range(shared):
+                self.latent_adapter.weight[i, i, 0, 0, 0] = 1.0
+        self.wan.latent_adapter = self.latent_adapter
+
+    def _ensure_divisible_size(self, image):
+        """
+        Pad a PIL image so height and width are divisible by the Pi3 patch size.
+
+        Args:
+            image: PIL.Image to pad.
+
+        Returns:
+            PIL.Image with zero-padding applied on the right/bottom edges when needed.
+        """
+        patch = self.pi3.patch_size
+        target_w = math.ceil(image.width / patch) * patch
+        target_h = math.ceil(image.height / patch) * patch
+        if target_w == image.width and target_h == image.height:
+            return image
+        padding = (0, 0, target_w - image.width, target_h - image.height)
+        return TF.pad(image, padding, fill=0)
+
+    def _pad_tensor_divisible(self, tensor: torch.Tensor) -> torch.Tensor:
+        patch = self.pi3.patch_size
+        leading_shape = tensor.shape[:-3]
+        c, h, w = tensor.shape[-3:]
+        target_h = math.ceil(h / patch) * patch
+        target_w = math.ceil(w / patch) * patch
+        if target_h == h and target_w == w:
+            return tensor
+        # F.pad pads in (left, right, top, bottom) order for 2D spatial dimensions.
+        padded = F.pad(tensor.reshape(-1, c, h, w),
+                       (0, target_w - w, 0, target_h - h))
+        return padded.reshape(*leading_shape, c, target_h, target_w)
 
     def _prepare_image_inputs(self, image) -> Tuple[torch.Tensor, Any]:
         if isinstance(image, torch.Tensor):
@@ -58,10 +110,17 @@ class Pi3GuidedTI2V(nn.Module):
                 tensor = tensor.unsqueeze(0)
             if tensor.dim() == 4:
                 tensor = tensor.unsqueeze(0)
+            patch = self.pi3.patch_size
+            needs_pad = (
+                tensor.shape[-1] % patch != 0 or tensor.shape[-2] % patch != 0
+            )
+            if needs_pad:
+                tensor = self._pad_tensor_divisible(tensor)
             pil = TF.to_pil_image(tensor[0, 0].cpu())
         else:
-            pil = image
-            tensor = TF.to_tensor(image).unsqueeze(0).unsqueeze(0)
+            pil = image if hasattr(image, "mode") and image.mode == "RGB" else image.convert("RGB")
+            pil = self._ensure_divisible_size(pil)
+            tensor = TF.to_tensor(pil).unsqueeze(0).unsqueeze(0)
         return tensor.to(self.device), pil
 
     def _build_latent_volume(self, latents: Dict[str, Any]) -> torch.Tensor:
