@@ -599,8 +599,6 @@ class WanTI2V:
             fused_latent = torch.cat([cond_latent, cond], dim=0)
         else:
             fused_latent = cond_latent
-        if fused_latent is None:
-            fused_latent = cond_latent
         cond_inputs = [fused_latent]
 
         @contextmanager

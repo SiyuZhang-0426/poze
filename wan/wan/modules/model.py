@@ -461,12 +461,16 @@ class WanModel(ModelMixin, ConfigMixin):
                 aligned_conditioning.append(v)
             merged_inputs = []
             expected_channels = self.patch_embedding.in_channels
+            pad_cache = None
             for u, v in zip(x, aligned_conditioning):
                 fused = torch.cat([u, v], dim=0)
                 if fused.shape[0] < expected_channels:
-                    pad = fused.new_zeros(
-                        expected_channels - fused.shape[0], *fused.shape[1:])
-                    fused = torch.cat([fused, pad], dim=0)
+                    pad_channels = expected_channels - fused.shape[0]
+                    if pad_cache is None or pad_cache.shape != (
+                            pad_channels, *fused.shape[1:]):
+                        pad_cache = fused.new_zeros(pad_channels,
+                                                    *fused.shape[1:])
+                    fused = torch.cat([fused, pad_cache], dim=0)
                 elif fused.shape[0] > expected_channels:
                     fused = fused[:expected_channels]
                 merged_inputs.append(fused)
