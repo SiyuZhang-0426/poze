@@ -730,8 +730,10 @@ class WanTI2V:
                 # x0 contains both RGB and Pi3 latents; VAE should only see the RGB slice.
                 final_latent = latent
                 rgb_latent = final_latent[:base_channels]
-                pi3_latent = final_latent[base_channels:base_channels +
-                                          pi3_channels] if pi3_channels > 0 else None
+                pi3_latent = (
+                    final_latent[base_channels:base_channels + pi3_channels]
+                    if pi3_channels > 0 else None
+                )
                 x0 = [rgb_latent]
                 del latent_model_input, timestep
 
@@ -762,8 +764,8 @@ class WanTI2V:
             rgb_latent = output_latent[:base_channels] if output_latent is not None else None
             pi3_latent_out = output_pi3_latent
             if pi3_latent_out is None and extra_channels > 0 and output_latent is not None:
-                pi3_latent_out = output_latent[base_channels:base_channels +
-                                               extra_channels]
+                pi3_latent_out = output_latent[
+                    base_channels:base_channels + extra_channels]
             result = {
                 "video": output_video,
                 "latent": output_latent,
