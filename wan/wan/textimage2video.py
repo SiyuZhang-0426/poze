@@ -559,6 +559,9 @@ class WanTI2V:
         cond_latent = z[0]
         fused_latent = cond_latent
         pi3_condition_adapted = None
+        # Track base (RGB) channels and optional PI3 conditioning channels.
+        base_channels = cond_latent.shape[0]
+        pi3_channels = 0
         if video_condition is not None:
             cond = video_condition
             if isinstance(cond, list):
@@ -588,6 +591,7 @@ class WanTI2V:
                 cond = self.latent_adapter(cond.unsqueeze(0)).squeeze(0)
             pi3_condition_adapted = cond
             fused_latent = torch.cat([cond_latent, cond], dim=0)
+            pi3_channels = cond.shape[0]
 
         if fused_latent.shape[0] != self.model.patch_embedding.in_channels:
             raise ValueError(
@@ -640,8 +644,8 @@ class WanTI2V:
             mask1, mask2 = masks_like([noise], zero=True)
             noise_mix_mask = mask2[0].clone()
             if pi3_condition_adapted is not None:
-                start = cond_latent.shape[0]
-                end = start + pi3_condition_adapted.shape[0]
+                start = base_channels
+                end = start + pi3_channels
                 noise_mix_mask[start:end] = 0
             latent = (1. - noise_mix_mask) * fused_latent + noise_mix_mask * latent
 
@@ -686,6 +690,29 @@ class WanTI2V:
                     torch.cuda.empty_cache()
                 noise_pred = noise_pred_uncond + guide_scale * (
                     noise_pred_cond - noise_pred_uncond)
+
+                # PI3 concatenation can change channel count; ensure predictions match fused latent width.
+                if pi3_condition_adapted is not None and noise_pred.shape[0] != fused_latent.shape[0]:
+                    channel_diff = fused_latent.shape[0] - noise_pred.shape[0]
+                    if channel_diff > 0:
+                        pad_shape = (channel_diff, *noise_pred.shape[1:])
+                        # Assumes the leading channels correspond to RGB; duplicate them into the PI3 slice when sizes match.
+                        if channel_diff == pi3_channels and noise_pred.shape[0] >= pi3_channels:
+                            channel_fill = noise_pred[:pi3_channels].clone()
+                        else:
+                            channel_fill = torch.zeros(
+                                pad_shape, device=noise_pred.device, dtype=noise_pred.dtype)
+                        noise_pred = torch.cat([noise_pred, channel_fill], dim=0)
+                    else:  # noise_pred has extra channels; truncate to fused latent width.
+                        noise_pred = noise_pred[:fused_latent.shape[0]]
+
+                # Align latent channel count with fused_latent for scheduler input; use fused_latent to fill missing channels for determinism.
+                if latent.shape[0] != fused_latent.shape[0]:
+                    if latent.shape[0] < fused_latent.shape[0]:
+                        fill = fused_latent[latent.shape[0]:]
+                        latent = torch.cat([latent, fill], dim=0)
+                    else:
+                        latent = latent[:fused_latent.shape[0]]
 
                 temp_x0 = sample_scheduler.step(
                     noise_pred.unsqueeze(0),
