@@ -667,10 +667,6 @@ class WanTI2V:
                 self.model.to(self.device)
                 torch.cuda.empty_cache()
 
-            final_latent = None
-            rgb_latent = None
-            pi3_latent = None
-            x0 = None
             for _, t in enumerate(tqdm(timesteps)):
                 latent_model_input = [latent.to(self.device)]
                 timestep = [t]
@@ -737,6 +733,11 @@ class WanTI2V:
                 x0 = [rgb_latent]
                 del latent_model_input, timestep
 
+            if 'final_latent' not in locals() or 'rgb_latent' not in locals(
+            ) or 'x0' not in locals():
+                raise RuntimeError(
+                    "Sampling loop did not produce latents for decoding.")
+
             if offload_model:
                 self.model.cpu()
                 torch.cuda.synchronize()
@@ -763,9 +764,6 @@ class WanTI2V:
             extra_channels = pi3_condition_adapted.shape[0] if pi3_condition_adapted is not None else 0
             rgb_latent = output_latent[:base_channels] if output_latent is not None else None
             pi3_latent_out = output_pi3_latent
-            if pi3_latent_out is None and extra_channels > 0 and output_latent is not None:
-                pi3_latent_out = output_latent[
-                    base_channels:base_channels + extra_channels]
             result = {
                 "video": output_video,
                 "latent": output_latent,
