@@ -539,14 +539,6 @@ class WanTI2V:
         seed = seed if seed >= 0 else random.randint(0, sys.maxsize)
         seed_g = torch.Generator(device=self.device)
         seed_g.manual_seed(seed)
-        noise = torch.randn(
-            self.vae.model.z_dim, (frame_count - 1) // self.vae_stride[0] + 1,
-            oh // self.vae_stride[1],
-            ow // self.vae_stride[2],
-            dtype=torch.float32,
-            generator=seed_g,
-            device=self.device)
-
         if n_prompt == "":
             n_prompt = self.sample_neg_prompt
 
@@ -596,7 +588,17 @@ class WanTI2V:
                 cond = self.latent_adapter(cond.unsqueeze(0)).squeeze(0)
             pi3_condition_adapted = cond
             fused_latent = torch.cat([cond_latent, cond], dim=0)
-        cond_inputs = [pi3_condition_adapted] if pi3_condition_adapted is not None else None
+
+        if fused_latent.shape[0] != self.model.patch_embedding.in_channels:
+            raise ValueError(
+                f"Fused latent channels ({fused_latent.shape[0]}) must match model patch embedding input "
+                f"channels ({self.model.patch_embedding.in_channels}).")
+
+        noise = torch.randn(
+            fused_latent.shape,
+            dtype=torch.float32,
+            generator=seed_g,
+            device=self.device)
 
         @contextmanager
         def noop_no_sync():
@@ -636,7 +638,12 @@ class WanTI2V:
             # sample videos
             latent = noise
             mask1, mask2 = masks_like([noise], zero=True)
-            latent = (1. - mask2[0]) * z[0] + mask2[0] * latent
+            noise_mix_mask = mask2[0].clone()
+            if pi3_condition_adapted is not None:
+                start = cond_latent.shape[0]
+                end = start + pi3_condition_adapted.shape[0]
+                noise_mix_mask[start:end] = 0
+            latent = (1. - noise_mix_mask) * fused_latent + noise_mix_mask * latent
 
             if extra_context is not None:
                 extra_context = extra_context.to(self.device)
@@ -670,11 +677,11 @@ class WanTI2V:
                 timestep = temp_ts.unsqueeze(0)
 
                 noise_pred_cond = self.model(
-                    latent_model_input, t=timestep, y=cond_inputs, **arg_c)[0]
+                    latent_model_input, t=timestep, **arg_c)[0]
                 if offload_model:
                     torch.cuda.empty_cache()
                 noise_pred_uncond = self.model(
-                    latent_model_input, t=timestep, y=cond_inputs, **arg_null)[0]
+                    latent_model_input, t=timestep, **arg_null)[0]
                 if offload_model:
                     torch.cuda.empty_cache()
                 noise_pred = noise_pred_uncond + guide_scale * (
@@ -687,7 +694,7 @@ class WanTI2V:
                     return_dict=False,
                     generator=seed_g)[0]
                 latent = temp_x0.squeeze(0)
-                latent = (1. - mask2[0]) * z[0] + mask2[0] * latent
+                latent = (1. - mask2[0]) * fused_latent + mask2[0] * latent
 
                 x0 = [latent]
                 del latent_model_input, timestep

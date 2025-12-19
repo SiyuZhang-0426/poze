@@ -436,8 +436,15 @@ class WanModel(ModelMixin, ConfigMixin):
             List[Tensor]:
                 List of denoised video tensors with original input shapes [C_out, F, H / 8, W / 8]
         """
-        if self.model_type == 'i2v':
-            assert y is not None
+        if self.model_type == 'i2v' and y is None:
+            expected_channels = self.patch_embedding.in_channels
+            for u in x:
+                actual_channels = u.shape[0]
+                if actual_channels != expected_channels:
+                    raise ValueError(
+                        "i2v model expects pre-concatenated latents that include both RGB and conditioning "
+                        f"channels; when calling without y, ensure each input matches patch_embedding.in_channels "
+                        f"(expected {expected_channels}, got {actual_channels}).")
         # params
         device = self.patch_embedding.weight.device
         if self.freqs.device != device:
