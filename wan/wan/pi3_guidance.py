@@ -71,6 +71,33 @@ class Pi3GuidedTI2V(nn.Module):
             for i in range(shared):
                 self.latent_adapter.weight[i, i, 0, 0, 0] = 1.0
         self.wan.latent_adapter = self.latent_adapter
+        self._align_patch_embedding_for_pi3()
+
+    def _align_patch_embedding_for_pi3(self) -> None:
+        """
+        If the Wan patch embedding expects concatenated RGB + Pi3 channels, seed the
+        Pi3 portion with the pretrained RGB weights to avoid random initialization.
+        """
+        patch_embedding = getattr(self.wan.model, "patch_embedding", None)
+        if patch_embedding is None:
+            # Some alternative model wrappers may replace or omit the patch embedding entirely.
+            return
+
+        base_channels = self.wan.vae.model.z_dim
+        # Patch embedding expects RGB latents plus Pi3 latents; the adapter produces the same channel count as RGB.
+        expected_channels = base_channels * 2
+        weight = getattr(patch_embedding, "weight", None)
+        if (
+            patch_embedding.in_channels != expected_channels
+            or weight is None
+            # Conv3d weights are shaped (out_channels, in_channels, depth, height, width).
+            or weight.dim() != 5
+        ):
+            return
+
+        with torch.no_grad():
+            rgb_weights = weight[:, :base_channels].clone()
+            weight[:, base_channels:expected_channels] = rgb_weights
 
     def _ensure_divisible_size(self, image):
         """
