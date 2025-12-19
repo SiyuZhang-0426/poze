@@ -723,8 +723,16 @@ class WanTI2V:
                 latent = temp_x0.squeeze(0)
                 latent = (1. - mask2[0]) * fused_latent + mask2[0] * latent
 
-                x0 = [latent]
                 del latent_model_input, timestep
+
+            # x0 contains both RGB and Pi3 latents; VAE should only see the RGB slice.
+            final_latent = latent
+            rgb_latent = final_latent[:base_channels]
+            pi3_latent = (
+                final_latent[base_channels:base_channels + pi3_channels]
+                if pi3_channels > 0 else None
+            )
+            x0 = [rgb_latent]
 
             if offload_model:
                 self.model.cpu()
@@ -735,8 +743,10 @@ class WanTI2V:
                 videos = self.vae.decode(x0)
 
         output_video = videos[0] if self.rank == 0 else None
-        output_latent = x0[0] if self.rank == 0 else None
-        del noise, latent, x0
+        output_latent = final_latent if self.rank == 0 else None
+        output_pi3_latent = pi3_latent if self.rank == 0 else None
+        output_rgb_latent = rgb_latent if self.rank == 0 else None
+        del noise, final_latent, rgb_latent, pi3_latent, x0
         del sample_scheduler
         if offload_model:
             gc.collect()
@@ -747,18 +757,13 @@ class WanTI2V:
         if self.rank != 0:
             return None
         if return_latents:
-            base_channels = cond_latent.shape[0]
-            extra_channels = pi3_condition_adapted.shape[0] if pi3_condition_adapted is not None else 0
-            rgb_latent = output_latent[:base_channels]
-            pi3_latent_out = output_latent[base_channels:base_channels +
-                                           extra_channels] if extra_channels > 0 else None
             result = {
                 "video": output_video,
                 "latent": output_latent,
-                "rgb_latent": rgb_latent,
+                "rgb_latent": output_rgb_latent,
                 "conditioning_latent": fused_latent,
             }
-            if pi3_latent_out is not None:
-                result["pi3_latent"] = pi3_latent_out
+            if output_pi3_latent is not None:
+                result["pi3_latent"] = output_pi3_latent
             return result
         return output_video
