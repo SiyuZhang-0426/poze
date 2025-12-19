@@ -691,12 +691,12 @@ class WanTI2V:
                 noise_pred = noise_pred_uncond + guide_scale * (
                     noise_pred_cond - noise_pred_uncond)
 
-                if pi3_condition_adapted is not None and noise_pred.shape[0] != latent.shape[0]:
+                if pi3_condition_adapted is not None and noise_pred.shape[0] != fused_latent.shape[0]:
                     missing_channels = fused_latent.shape[0] - noise_pred.shape[0]
                     if missing_channels > 0:
                         pad_shape = (missing_channels, *noise_pred.shape[1:])
                         # Duplicate RGB prediction for the PI3 slice when shapes align; otherwise pad with zeros.
-                        if missing_channels == pi3_channels and noise_pred.shape[0] >= pi3_channels:
+                        if missing_channels == pi3_channels:
                             pad = noise_pred[:pi3_channels].clone()
                         else:
                             pad = torch.zeros(
