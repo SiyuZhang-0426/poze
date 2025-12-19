@@ -111,6 +111,27 @@ def _default_output_path(args: argparse.Namespace) -> Path:
             f"{args.wan_config}_{prompt_stub}_{timestamp}.mp4")
 
 
+def _ensure_video_shape(video: torch.Tensor) -> torch.Tensor:
+    """
+    Normalize a video tensor to shape (B, C, T, H, W) so save_video writes all frames.
+    """
+    if video.dim() == 5:
+        # Already batched; ensure channel is second dim.
+        if video.shape[1] == 3:
+            return video
+        if video.shape[2] == 3:
+            return video.permute(0, 2, 1, 3, 4)
+    if video.dim() == 4:
+        # Common cases: (C, T, H, W) or (T, C, H, W) or (H, W, T, C)
+        if video.shape[0] == 3:
+            return video.unsqueeze(0)
+        if video.shape[1] == 3:
+            return video.permute(1, 0, 2, 3).unsqueeze(0)
+        if video.shape[-1] == 3:
+            return video.permute(3, 0, 1, 2).unsqueeze(0)
+    raise ValueError(f"Unexpected video tensor shape {tuple(video.shape)}")
+
+
 def main():
     args = _parse_args()
     logging.basicConfig(
@@ -145,7 +166,7 @@ def main():
     )
 
     logging.info("Saving video to %s", output_path)
-    video = outputs["video"].unsqueeze(0)
+    video = _ensure_video_shape(outputs["video"])
     save_video(
         tensor=video,
         save_file=str(output_path),
