@@ -667,6 +667,10 @@ class WanTI2V:
                 self.model.to(self.device)
                 torch.cuda.empty_cache()
 
+            final_latent = None
+            rgb_latent = None
+            pi3_latent = None
+            x0 = None
             for _, t in enumerate(tqdm(timesteps)):
                 latent_model_input = [latent.to(self.device)]
                 timestep = [t]
@@ -723,7 +727,12 @@ class WanTI2V:
                 latent = temp_x0.squeeze(0)
                 latent = (1. - mask2[0]) * fused_latent + mask2[0] * latent
 
-                x0 = [latent]
+                # x0 contains both RGB and Pi3 latents; VAE should only see the RGB slice.
+                final_latent = latent
+                rgb_latent = final_latent[:base_channels]
+                pi3_latent = final_latent[base_channels:base_channels +
+                                          pi3_channels] if pi3_channels > 0 else None
+                x0 = [rgb_latent]
                 del latent_model_input, timestep
 
             if offload_model:
@@ -735,8 +744,9 @@ class WanTI2V:
                 videos = self.vae.decode(x0)
 
         output_video = videos[0] if self.rank == 0 else None
-        output_latent = x0[0] if self.rank == 0 else None
-        del noise, latent, x0
+        output_latent = final_latent if self.rank == 0 else None
+        output_pi3_latent = pi3_latent if self.rank == 0 else None
+        del noise, latent, final_latent, rgb_latent, pi3_latent, x0
         del sample_scheduler
         if offload_model:
             gc.collect()
@@ -749,9 +759,11 @@ class WanTI2V:
         if return_latents:
             base_channels = cond_latent.shape[0]
             extra_channels = pi3_condition_adapted.shape[0] if pi3_condition_adapted is not None else 0
-            rgb_latent = output_latent[:base_channels]
-            pi3_latent_out = output_latent[base_channels:base_channels +
-                                           extra_channels] if extra_channels > 0 else None
+            rgb_latent = output_latent[:base_channels] if output_latent is not None else None
+            pi3_latent_out = output_pi3_latent
+            if pi3_latent_out is None and extra_channels > 0 and output_latent is not None:
+                pi3_latent_out = output_latent[base_channels:base_channels +
+                                               extra_channels]
             result = {
                 "video": output_video,
                 "latent": output_latent,
