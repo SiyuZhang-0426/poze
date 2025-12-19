@@ -559,6 +559,9 @@ class WanTI2V:
         cond_latent = z[0]
         fused_latent = cond_latent
         pi3_condition_adapted = None
+        # Track base (RGB) channels and optional PI3 conditioning channels.
+        base_channels = cond_latent.shape[0]
+        pi3_channels = 0
         if video_condition is not None:
             cond = video_condition
             if isinstance(cond, list):
@@ -588,6 +591,7 @@ class WanTI2V:
                 cond = self.latent_adapter(cond.unsqueeze(0)).squeeze(0)
             pi3_condition_adapted = cond
             fused_latent = torch.cat([cond_latent, cond], dim=0)
+            pi3_channels = cond.shape[0]
 
         if fused_latent.shape[0] != self.model.patch_embedding.in_channels:
             raise ValueError(
@@ -640,8 +644,8 @@ class WanTI2V:
             mask1, mask2 = masks_like([noise], zero=True)
             noise_mix_mask = mask2[0].clone()
             if pi3_condition_adapted is not None:
-                start = cond_latent.shape[0]
-                end = start + pi3_condition_adapted.shape[0]
+                start = base_channels
+                end = start + pi3_channels
                 noise_mix_mask[start:end] = 0
             latent = (1. - noise_mix_mask) * fused_latent + noise_mix_mask * latent
 
@@ -687,13 +691,25 @@ class WanTI2V:
                 noise_pred = noise_pred_uncond + guide_scale * (
                     noise_pred_cond - noise_pred_uncond)
 
-                temp_x0 = sample_scheduler.step(
-                    noise_pred.unsqueeze(0),
-                    t,
-                    latent.unsqueeze(0),
-                    return_dict=False,
-                    generator=seed_g)[0]
-                latent = temp_x0.squeeze(0)
+                # When conditioning latents are concatenated, only the RGB slice is predicted by the model.
+                if pi3_condition_adapted is not None and noise_pred.shape[0] != latent.shape[0]:
+                    rgb_latent = latent[:base_channels]
+                    cond_slice = fused_latent[base_channels:base_channels + pi3_channels]
+                    temp_x0 = sample_scheduler.step(
+                        noise_pred[:base_channels].unsqueeze(0),
+                        t,
+                        rgb_latent.unsqueeze(0),
+                        return_dict=False,
+                        generator=seed_g)[0]
+                    latent = torch.cat([temp_x0.squeeze(0), cond_slice], dim=0)
+                else:
+                    temp_x0 = sample_scheduler.step(
+                        noise_pred.unsqueeze(0),
+                        t,
+                        latent.unsqueeze(0),
+                        return_dict=False,
+                        generator=seed_g)[0]
+                    latent = temp_x0.squeeze(0)
                 latent = (1. - mask2[0]) * fused_latent + mask2[0] * latent
 
                 x0 = [latent]
