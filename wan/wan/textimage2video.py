@@ -723,15 +723,16 @@ class WanTI2V:
                 latent = temp_x0.squeeze(0)
                 latent = (1. - mask2[0]) * fused_latent + mask2[0] * latent
 
-                # x0 contains both RGB and Pi3 latents; VAE should only see the RGB slice.
-                final_latent = latent
-                rgb_latent = final_latent[:base_channels]
-                pi3_latent = (
-                    final_latent[base_channels:base_channels + pi3_channels]
-                    if pi3_channels > 0 else None
-                )
-                x0 = [rgb_latent]
                 del latent_model_input, timestep
+
+            # x0 contains both RGB and Pi3 latents; VAE should only see the RGB slice.
+            final_latent = latent
+            rgb_latent = final_latent[:base_channels]
+            pi3_latent = (
+                final_latent[base_channels:base_channels + pi3_channels]
+                if pi3_channels > 0 else None
+            )
+            x0 = [rgb_latent]
 
             if offload_model:
                 self.model.cpu()
