@@ -750,6 +750,7 @@ class WanTI2V:
         output_video = videos[0] if self.rank == 0 else None
         output_latent = final_latent if self.rank == 0 else None
         output_pi3_latent = pi3_latent if self.rank == 0 else None
+        output_rgb_latent = rgb_latent if self.rank == 0 else None
         del noise, final_latent, rgb_latent, pi3_latent, x0
         del sample_scheduler
         if offload_model:
@@ -761,9 +762,8 @@ class WanTI2V:
         if self.rank != 0:
             return None
         if return_latents:
-            base_channels = cond_latent.shape[0]
-            extra_channels = pi3_condition_adapted.shape[0] if pi3_condition_adapted is not None else 0
-            rgb_latent = output_latent[:base_channels] if output_latent is not None else None
+            extra_channels = pi3_channels
+            rgb_latent = output_rgb_latent
             pi3_latent_out = output_pi3_latent
             result = {
                 "video": output_video,
