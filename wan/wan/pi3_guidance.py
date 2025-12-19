@@ -80,16 +80,24 @@ class Pi3GuidedTI2V(nn.Module):
         """
         patch_embedding = getattr(self.wan.model, "patch_embedding", None)
         if patch_embedding is None:
+            # Some alternative model wrappers may replace or omit the patch embedding entirely.
             return
 
         base_channels = self.wan.vae.model.z_dim
+        # Patch embedding expects RGB latents plus Pi3 latents; the adapter produces the same channel count as RGB.
         expected_channels = base_channels * 2
-        if patch_embedding.in_channels != expected_channels:
+        weight = getattr(patch_embedding, "weight", None)
+        if (
+            patch_embedding.in_channels != expected_channels
+            or weight is None
+            # Conv3d weights are shaped (out_channels, in_channels, depth, height, width).
+            or weight.dim() != 5
+        ):
             return
 
         with torch.no_grad():
-            rgb_weights = patch_embedding.weight[:, :base_channels].clone()
-            patch_embedding.weight[:, base_channels:expected_channels] = rgb_weights
+            rgb_weights = weight[:, :base_channels].clone()
+            weight[:, base_channels:expected_channels] = rgb_weights
 
     def _ensure_divisible_size(self, image):
         """
