@@ -691,25 +691,26 @@ class WanTI2V:
                 noise_pred = noise_pred_uncond + guide_scale * (
                     noise_pred_cond - noise_pred_uncond)
 
-                # When conditioning latents are concatenated, only the RGB slice is predicted by the model.
                 if pi3_condition_adapted is not None and noise_pred.shape[0] != latent.shape[0]:
-                    rgb_latent = latent[:base_channels]
-                    cond_slice = fused_latent[base_channels:base_channels + pi3_channels]
-                    temp_x0 = sample_scheduler.step(
-                        noise_pred[:base_channels].unsqueeze(0),
-                        t,
-                        rgb_latent.unsqueeze(0),
-                        return_dict=False,
-                        generator=seed_g)[0]
-                    latent = torch.cat([temp_x0.squeeze(0), cond_slice], dim=0)
-                else:
-                    temp_x0 = sample_scheduler.step(
-                        noise_pred.unsqueeze(0),
-                        t,
-                        latent.unsqueeze(0),
-                        return_dict=False,
-                        generator=seed_g)[0]
-                    latent = temp_x0.squeeze(0)
+                    missing_channels = fused_latent.shape[0] - noise_pred.shape[0]
+                    if missing_channels > 0:
+                        pad_shape = (missing_channels, *noise_pred.shape[1:])
+                        if missing_channels == pi3_channels and noise_pred.shape[0] >= pi3_channels:
+                            pad = noise_pred[:pi3_channels].clone()
+                        else:
+                            pad = torch.zeros(
+                                pad_shape, device=noise_pred.device, dtype=noise_pred.dtype)
+                        noise_pred = torch.cat([noise_pred, pad], dim=0)
+                    else:
+                        noise_pred = noise_pred[:fused_latent.shape[0]]
+
+                temp_x0 = sample_scheduler.step(
+                    noise_pred.unsqueeze(0),
+                    t,
+                    latent.unsqueeze(0),
+                    return_dict=False,
+                    generator=seed_g)[0]
+                latent = temp_x0.squeeze(0)
                 latent = (1. - mask2[0]) * fused_latent + mask2[0] * latent
 
                 x0 = [latent]
