@@ -693,11 +693,11 @@ class WanTI2V:
 
                 # PI3 concatenation can change channel count; ensure predictions match fused latent width.
                 if pi3_condition_adapted is not None and noise_pred.shape[0] != fused_latent.shape[0]:
-                    missing_channels = fused_latent.shape[0] - noise_pred.shape[0]
-                    if missing_channels > 0:
-                        pad_shape = (missing_channels, *noise_pred.shape[1:])
-                        # Duplicate RGB prediction for the PI3 slice when shapes align; otherwise pad with zeros.
-                        if missing_channels == pi3_channels and noise_pred.shape[0] >= pi3_channels:
+                    channel_diff = fused_latent.shape[0] - noise_pred.shape[0]
+                    if channel_diff > 0:
+                        pad_shape = (channel_diff, *noise_pred.shape[1:])
+                        # Assumes the leading channels correspond to RGB; duplicate them into the PI3 slice when sizes match.
+                        if channel_diff == pi3_channels and noise_pred.shape[0] >= pi3_channels:
                             channel_fill = noise_pred[:pi3_channels].clone()
                         else:
                             channel_fill = torch.zeros(
@@ -706,7 +706,7 @@ class WanTI2V:
                     else:  # noise_pred has extra channels; truncate to fused latent width.
                         noise_pred = noise_pred[:fused_latent.shape[0]]
 
-                # Align latent channel count with fused_latent for scheduler input.
+                # Align latent channel count with fused_latent for scheduler input; use fused_latent to fill missing channels for determinism.
                 if latent.shape[0] != fused_latent.shape[0]:
                     if latent.shape[0] < fused_latent.shape[0]:
                         fill = fused_latent[latent.shape[0]:]
