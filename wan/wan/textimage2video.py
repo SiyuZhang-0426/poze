@@ -565,6 +565,8 @@ class WanTI2V:
 
         z = self.vae.encode([img])
         cond_latent = z[0]
+        fused_latent = cond_latent
+        pi3_condition_adapted = None
         if video_condition is not None:
             cond = video_condition
             if isinstance(cond, list):
@@ -592,12 +594,9 @@ class WanTI2V:
             )
             if can_project:
                 cond = self.latent_adapter(cond.unsqueeze(0)).squeeze(0)
-                cond_latent = cond_latent + cond
-            else:
-                # Fall back to concatenation when no adapter is set or channel counts differ.
-                # Fuse encoded RGB latents with Pi3 spatial latents along the channel dimension.
-                cond_latent = torch.cat([cond_latent, cond], dim=0)
-        cond_inputs = [cond_latent]
+            pi3_condition_adapted = cond
+            fused_latent = torch.cat([cond_latent, cond], dim=0)
+        cond_inputs = [pi3_condition_adapted] if pi3_condition_adapted is not None else None
 
         @contextmanager
         def noop_no_sync():
@@ -701,6 +700,8 @@ class WanTI2V:
             if self.rank == 0:
                 videos = self.vae.decode(x0)
 
+        output_video = videos[0] if self.rank == 0 else None
+        output_latent = x0[0] if self.rank == 0 else None
         del noise, latent, x0
         del sample_scheduler
         if offload_model:
@@ -709,4 +710,21 @@ class WanTI2V:
         if dist.is_initialized():
             dist.barrier()
 
-        return videos[0] if self.rank == 0 else None
+        if self.rank != 0:
+            return None
+        if return_latents:
+            base_channels = cond_latent.shape[0]
+            extra_channels = pi3_condition_adapted.shape[0] if pi3_condition_adapted is not None else 0
+            rgb_latent = output_latent[:base_channels]
+            pi3_latent_out = output_latent[base_channels:base_channels +
+                                           extra_channels] if extra_channels > 0 else None
+            result = {
+                "video": output_video,
+                "latent": output_latent,
+                "rgb_latent": rgb_latent,
+                "conditioning_latent": fused_latent,
+            }
+            if pi3_latent_out is not None:
+                result["pi3_latent"] = pi3_latent_out
+            return result
+        return output_video
