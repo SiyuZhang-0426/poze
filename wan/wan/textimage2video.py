@@ -733,11 +733,6 @@ class WanTI2V:
                 x0 = [rgb_latent]
                 del latent_model_input, timestep
 
-            if 'final_latent' not in locals() or 'rgb_latent' not in locals(
-            ) or 'x0' not in locals():
-                raise RuntimeError(
-                    "Sampling loop did not produce latents for decoding.")
-
             if offload_model:
                 self.model.cpu()
                 torch.cuda.synchronize()
@@ -749,7 +744,7 @@ class WanTI2V:
         output_video = videos[0] if self.rank == 0 else None
         output_latent = final_latent if self.rank == 0 else None
         output_pi3_latent = pi3_latent if self.rank == 0 else None
-        del noise, latent, final_latent, rgb_latent, pi3_latent, x0
+        del noise, final_latent, rgb_latent, pi3_latent, x0
         del sample_scheduler
         if offload_model:
             gc.collect()
