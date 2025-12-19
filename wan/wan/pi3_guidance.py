@@ -59,6 +59,12 @@ class Pi3GuidedTI2V(nn.Module):
             out_channels=self.wan.vae.model.z_dim,
             kernel_size=1,
         ).to(self.device)
+        # Recover Pi3 latents (from diffusion output) back into decoder token space for per-frame decoding.
+        self.pi3_recover_adapter = nn.Conv3d(
+            in_channels=self.wan.vae.model.z_dim,
+            out_channels=pi3_channel_dim,
+            kernel_size=1,
+        ).to(self.device)
         with torch.no_grad():
             # Seed with a channel-copy identity so image latents stay intact while Pi3 features are blended in.
             self.latent_adapter.weight.zero_()
@@ -70,6 +76,16 @@ class Pi3GuidedTI2V(nn.Module):
             )
             for i in range(shared):
                 self.latent_adapter.weight[i, i, 0, 0, 0] = 1.0
+            # Mirror the identity-style init for the recovery adapter so round-tripping is stable before finetuning.
+            self.pi3_recover_adapter.weight.zero_()
+            if self.pi3_recover_adapter.bias is not None:
+                self.pi3_recover_adapter.bias.zero_()
+            shared_recover = min(
+                self.pi3_recover_adapter.in_channels,
+                self.pi3_recover_adapter.out_channels,
+            )
+            for i in range(shared_recover):
+                self.pi3_recover_adapter.weight[i, i, 0, 0, 0] = 1.0
         self.wan.latent_adapter = self.latent_adapter
         self._align_patch_embedding_for_pi3()
 
@@ -195,6 +211,85 @@ class Pi3GuidedTI2V(nn.Module):
         )
         return tokens.permute(0, 4, 1, 2, 3).contiguous()
 
+    def _decode_pi3_latent_sequence(self, pi3_latent: torch.Tensor) -> Optional[Dict[str, Any]]:
+        """
+        Recover dynamic Pi3 latents (returned by diffusion) back to Pi3 head inputs and decode them per frame.
+
+        Args:
+            pi3_latent: Tensor of shape (C, F, H, W) or (B, C, F, H, W) representing the Pi3 latent slice
+                produced by the diffusion model after the forward pass.
+
+        Returns:
+            Dict of decoded Pi3 predictions (points/conf/camera) or None when input is invalid.
+        """
+        if pi3_latent is None:
+            return None
+        if isinstance(pi3_latent, list):
+            if len(pi3_latent) == 0:
+                return None
+            pi3_latent = pi3_latent[0]
+        if not isinstance(pi3_latent, torch.Tensor):
+            return None
+
+        if pi3_latent.dim() == 4:
+            pi3_latent = pi3_latent.unsqueeze(0)
+        if pi3_latent.dim() != 5:
+            return None
+
+        with torch.no_grad():
+            recovered = self.pi3_recover_adapter(pi3_latent.to(self.device))
+            b, c, f, h, w = recovered.shape
+            # Rebuild decoder_hidden tokens (without registers) then prepend doubled register tokens.
+            tokens = recovered.permute(0, 2, 3, 4, 1).reshape(b * f, h * w, c)
+            register = torch.cat(
+                [self.pi3.register_token, self.pi3.register_token],
+                dim=-1,
+            ).to(tokens.device, tokens.dtype)
+            register = register.repeat(b, f, 1, 1).reshape(
+                b * f,
+                self.pi3.patch_start_idx,
+                c,
+            )
+            decoder_hidden = torch.cat([register, tokens], dim=1)
+
+            pos = self.pi3.position_getter(
+                b * f, h, w, tokens.device).to(tokens.dtype)
+            pos = pos + 1
+            pos_special = torch.zeros(
+                b * f,
+                self.pi3.patch_start_idx,
+                2,
+                device=tokens.device,
+                dtype=pos.dtype,
+            )
+            pos = torch.cat([pos_special, pos], dim=1)
+
+            point_tokens = self.pi3.point_decoder(decoder_hidden, xpos=pos)
+            conf_tokens = self.pi3.conf_decoder(decoder_hidden, xpos=pos)
+            camera_tokens = self.pi3.camera_decoder(decoder_hidden, xpos=pos)
+
+            H_pix = h * self.pi3.patch_size
+            W_pix = w * self.pi3.patch_size
+            decoded = self.pi3._decode_tokens(
+                point_tokens,
+                conf_tokens,
+                camera_tokens,
+                H_pix,
+                W_pix,
+                b,
+                f,
+            )
+            decoded['latents'] = dict(
+                decoder_hidden=decoder_hidden,
+                point_tokens=point_tokens,
+                conf_tokens=conf_tokens,
+                camera_tokens=camera_tokens,
+                hw=(H_pix, W_pix),
+                frames=f,
+                batch=b,
+            )
+            return decoded
+
     def generate_with_3d(self, prompt: str, image, enable_grad: bool = False, **kwargs) -> Dict[str, Any]:
         imgs, pil_image = self._prepare_image_inputs(image)
         with torch.no_grad():
@@ -226,7 +321,11 @@ class Pi3GuidedTI2V(nn.Module):
             decoded_video = self.wan.vae.decode([rgb_latent])[0]
             if video is None:
                 video = decoded_video
-        pi3_preds = self.pi3.decode_from_latents(latents)
+        pi3_preds = None
+        if pi3_condition_latent is not None:
+            pi3_preds = self._decode_pi3_latent_sequence(pi3_condition_latent)
+        if pi3_preds is None:
+            pi3_preds = self.pi3.decode_from_latents(latents)
         return {
             "video": video,
             "decoded_video": decoded_video,
