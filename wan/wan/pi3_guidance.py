@@ -87,17 +87,40 @@ class Pi3GuidedTI2V(nn.Module):
         # Patch embedding expects RGB latents plus Pi3 latents; the adapter produces the same channel count as RGB.
         expected_channels = base_channels * 2
         weight = getattr(patch_embedding, "weight", None)
-        if (
-            patch_embedding.in_channels != expected_channels
-            or weight is None
-            # Conv3d weights are shaped (out_channels, in_channels, depth, height, width).
-            or weight.dim() != 5
-        ):
+        if weight is None or weight.dim() != 5:
             return
 
-        with torch.no_grad():
-            rgb_weights = weight[:, :base_channels].clone()
-            weight[:, base_channels:expected_channels] = rgb_weights
+        if patch_embedding.in_channels not in (base_channels, expected_channels):
+            return
+
+        if patch_embedding.in_channels == expected_channels:
+            with torch.no_grad():
+                rgb_weights = weight[:, :base_channels].clone()
+                weight[:, base_channels:expected_channels] = rgb_weights
+            return
+
+        if patch_embedding.in_channels == base_channels:
+            bias = patch_embedding.bias
+            new_patch = nn.Conv3d(
+                in_channels=expected_channels,
+                out_channels=patch_embedding.out_channels,
+                kernel_size=patch_embedding.kernel_size,
+                stride=patch_embedding.stride,
+                padding=patch_embedding.padding,
+                dilation=patch_embedding.dilation,
+                groups=patch_embedding.groups,
+                bias=bias is not None,
+                device=weight.device,
+                dtype=weight.dtype,
+            )
+            with torch.no_grad():
+                new_patch.weight.zero_()
+                rgb_weights = weight.clone()
+                new_patch.weight[:, :base_channels] = rgb_weights
+                new_patch.weight[:, base_channels:expected_channels] = rgb_weights
+                if bias is not None:
+                    new_patch.bias.copy_(bias)
+            self.wan.model.patch_embedding = new_patch
 
     def _ensure_divisible_size(self, image):
         """
