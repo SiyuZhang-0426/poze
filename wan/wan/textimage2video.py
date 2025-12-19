@@ -695,13 +695,14 @@ class WanTI2V:
                     missing_channels = fused_latent.shape[0] - noise_pred.shape[0]
                     if missing_channels > 0:
                         pad_shape = (missing_channels, *noise_pred.shape[1:])
+                        # Duplicate RGB prediction for the PI3 slice when shapes align; otherwise pad with zeros.
                         if missing_channels == pi3_channels and noise_pred.shape[0] >= pi3_channels:
                             pad = noise_pred[:pi3_channels].clone()
                         else:
                             pad = torch.zeros(
                                 pad_shape, device=noise_pred.device, dtype=noise_pred.dtype)
                         noise_pred = torch.cat([noise_pred, pad], dim=0)
-                    else:
+                    else:  # noise_pred has extra channels; truncate to fused latent width.
                         noise_pred = noise_pred[:fused_latent.shape[0]]
 
                 temp_x0 = sample_scheduler.step(
