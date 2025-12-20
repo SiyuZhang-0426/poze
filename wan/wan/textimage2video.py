@@ -593,13 +593,9 @@ class WanTI2V:
             fused_latent = torch.cat([cond_latent, cond], dim=0)
             pi3_channels = cond.shape[0]
 
-        if fused_latent.shape[0] != self.model.patch_embedding.in_channels:
-            raise ValueError(
-                f"Fused latent channels ({fused_latent.shape[0]}) must match model patch embedding input "
-                f"channels ({self.model.patch_embedding.in_channels}).")
 
         noise = torch.randn(
-            self.vae.model.z_dim * 2,
+            self.vae.model.z_dim,
             (frame_count - 1) // self.vae_stride[0] + 1,
             oh // self.vae_stride[1],
             ow // self.vae_stride[2],
@@ -607,12 +603,29 @@ class WanTI2V:
             generator=seed_g,
             device=self.device)
 
+        if video_condition is not None:
+            noise = torch.randn(
+                self.vae.model.z_dim * 2,
+                (frame_count - 1) // self.vae_stride[0] + 1,
+                oh // self.vae_stride[1],
+                ow // self.vae_stride[2],
+                dtype=torch.float32,
+                generator=seed_g,
+                device=self.device)
+
+
         @contextmanager
         def noop_no_sync():
             yield
 
         no_sync = getattr(self.model, 'no_sync', noop_no_sync)
         grad_context = nullcontext() if enable_grad else torch.no_grad()
+
+        # define variables avoid undefined reference error
+        final_latent = None
+        rgb_latent = None
+        pi3_latent = None
+        x0 = None
 
         # evaluation mode
         with (
@@ -645,9 +658,6 @@ class WanTI2V:
             # sample videos
             latent = noise
             mask1, mask2 = masks_like([noise], zero=True)
-            print("the shape of mask2 is", mask2[0].shape)
-            print("the shape of fused_latent is", fused_latent.shape)
-            print("the shape of latent is", latent.shape)
             latent = (1. - mask2[0]) * fused_latent + mask2[0] * latent
 
             if extra_context is not None:
@@ -692,19 +702,17 @@ class WanTI2V:
                 noise_pred = noise_pred_uncond + guide_scale * (
                     noise_pred_cond - noise_pred_uncond)
 
-                # PI3 concatenation can change channel count; ensure predictions match fused latent width.
                 if pi3_condition_adapted is not None and noise_pred.shape[0] != fused_latent.shape[0]:
                     channel_diff = fused_latent.shape[0] - noise_pred.shape[0]
                     if channel_diff > 0:
                         pad_shape = (channel_diff, *noise_pred.shape[1:])
-                        # Assumes the leading channels correspond to RGB; duplicate them into the PI3 slice when sizes match.
                         if channel_diff == pi3_channels and noise_pred.shape[0] >= pi3_channels:
                             channel_fill = noise_pred[:pi3_channels].clone()
                         else:
                             channel_fill = torch.zeros(
                                 pad_shape, device=noise_pred.device, dtype=noise_pred.dtype)
                         noise_pred = torch.cat([noise_pred, channel_fill], dim=0)
-                    else:  # noise_pred has extra channels; truncate to fused latent width.
+                    else:
                         noise_pred = noise_pred[:fused_latent.shape[0]]
 
                 temp_x0 = sample_scheduler.step(
@@ -719,17 +727,16 @@ class WanTI2V:
                 x0 = [latent]
                 del latent_model_input, timestep
 
-            # x0 contains both RGB and Pi3 latents; VAE should only see the RGB slice.
-            final_latent = latent
-            rgb_latent = final_latent[:base_channels]
-            pi3_latent = (
-                final_latent[base_channels:base_channels + pi3_channels]
-                if pi3_channels > 0 else None
-            )
-            # print the shape of rgb_latent, pi3_latent, and x0
-            print("the shape of rgb_latent is, [channel, frame, height, width]:", rgb_latent.shape)
-            print("the shape of pi3_latent is", pi3_latent.shape)
-            x0 = [rgb_latent]
+            if video_condition is not None:
+                final_latent = latent
+                rgb_latent = final_latent[:base_channels]
+                pi3_latent = (
+                    final_latent[base_channels:base_channels + pi3_channels]
+                    if pi3_channels > 0 else None
+                )
+                x0 = [rgb_latent]
+            else:
+                x0 = [latent]
 
             if offload_model:
                 self.model.cpu()
@@ -742,6 +749,7 @@ class WanTI2V:
         output_video = videos[0] if self.rank == 0 else None
         output_pi3_latent = pi3_latent if self.rank == 0 else None
         output_rgb_latent = rgb_latent if self.rank == 0 else None
+
         del noise, final_latent, rgb_latent, pi3_latent, x0
         del sample_scheduler
         if offload_model:

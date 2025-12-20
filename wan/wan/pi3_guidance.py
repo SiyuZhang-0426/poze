@@ -87,7 +87,8 @@ class Pi3GuidedTI2V(nn.Module):
             for i in range(shared_recover):
                 self.pi3_recover_adapter.weight[i, i, 0, 0, 0] = 1.0
         self.wan.latent_adapter = self.latent_adapter
-        self._align_patch_embedding_for_pi3()
+        # test, comment out
+        # self._align_patch_embedding_for_pi3()
 
     def _align_patch_embedding_for_pi3(self) -> None:
         """
@@ -298,10 +299,11 @@ class Pi3GuidedTI2V(nn.Module):
         latent_volume = self._build_latent_volume(latents)
         if enable_grad:
             kwargs.setdefault("offload_model", False)
+        # test, set video_condition to None
         generated = self.wan.generate(
             prompt,
             img=pil_image,
-            video_condition=latent_volume,
+            video_condition=None,
             enable_grad=enable_grad,
             return_latents=True,
             **kwargs,
