@@ -12,6 +12,5 @@ python inference.py \
     --image ./zsydata/snowball.jpg \
     --prompt 'Ultra-detailed close-up of a fluffy white Persian kitten with long, silky fur and large dark eyes, lying on a glossy white surface. The kitten gently wags its tail and shifts its gaze curiously. Background: modern minimalist living room with a warm spherical lamp, blurred beige furniture, and soft natural lighting. 4K resolution, cinematic shallow depth of field, smooth motion, cozy serene atmosphere, ultra-realistic fur texture.' \
     --device cuda \
-    --output ./outputs/snowball.mp4 \
-    --save-pi3 ./outputs/snowball_pi3.pt
+    --output ./outputs/snowball.mp4
 "

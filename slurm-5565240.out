@@ -1,0 +1,9 @@
+15:4: not a valid test operator:  
+15:4: not a valid test operator: 12.4
+21:4: not a valid test operator: (
+21:4: not a valid test operator: 550.90.07
+usage: example.py [-h] [--data_path DATA_PATH] [--save_path SAVE_PATH]
+                  [--interval INTERVAL] [--ckpt CKPT] [--device DEVICE]
+example.py: error: unrecognized arguments: --data-path ./zsydata
+Warning, cannot find cuda-compiled version of RoPE2D, using a slow pytorch version instead
+srun: error: HOST-10-140-60-86: task 0: Exited with exit code 2

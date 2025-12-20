@@ -308,32 +308,17 @@ class Pi3GuidedTI2V(nn.Module):
         )
         if isinstance(generated, dict):
             video = generated.get("video")
-            wan_latent = generated.get("latent")
-            rgb_latent = generated.get("rgb_latent", wan_latent)
-            pi3_condition_latent = generated.get("pi3_latent")
+            rgb_latent = generated.get("rgb_latent")
+            pi3_latent = generated.get("pi3_latent")
         else:
             video = generated
-            wan_latent = None
             rgb_latent = None
-            pi3_condition_latent = None
-        decoded_video = None
-        if rgb_latent is not None:
-            decoded_video = self.wan.vae.decode([rgb_latent])[0]
-            if video is None:
-                video = decoded_video
-        pi3_preds = None
-        if pi3_condition_latent is not None:
-            pi3_preds = self._decode_pi3_latent_sequence(pi3_condition_latent)
-        if pi3_preds is None:
-            pi3_preds = self.pi3.decode_from_latents(latents)
+            pi3_latent = None
+        # pi3_preds = self._decode_pi3_latent_sequence(pi3_latent)
         return {
             "video": video,
-            "decoded_video": decoded_video,
-            "wan_latent": wan_latent,
             "rgb_latent": rgb_latent,
-            "pi3_condition_latent": pi3_condition_latent,
-            "pi3": pi3_preds,
-            "latents": latents,
+            # "pi3_preds": pi3_preds,
         }
 
     def training_step(
