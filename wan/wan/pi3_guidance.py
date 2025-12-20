@@ -314,7 +314,6 @@ class Pi3GuidedTI2V(nn.Module):
             video_condition = latent_volume
         if enable_grad:
             kwargs.setdefault("offload_model", False)
-        # test, set video_condition to None
         generated = self.wan.generate(
             prompt,
             img=pil_image,
@@ -356,7 +355,7 @@ class Pi3GuidedTI2V(nn.Module):
             total_loss = total_loss + video_weight * losses['video']
         if gt_points is not None:
             if not self.use_pi3:
-                raise ValueError("Point supervision requires Pi3 conditioning; set use_pi3=True.")
+                raise ValueError("Point supervision training requires Pi3 conditioning to be enabled. Set use_pi3=True to enable this feature.")
             losses['points'] = F.l1_loss(outputs['pi3']['points'], gt_points)
             total_loss = total_loss + point_weight * losses['points']
         outputs['loss'] = total_loss

@@ -645,7 +645,7 @@ class WanTI2V:
                 cond = self.latent_adapter(cond.unsqueeze(0)).squeeze(0)
             pi3_condition_adapted = cond
             fused_latent = torch.cat([cond_latent, cond], dim=0)
-            condition_channels = channel_count if cond.shape[0] == channel_count else cond.shape[0]
+            condition_channels = cond.shape[0]
 
 
         noise = torch.randn(
