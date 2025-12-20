@@ -46,6 +46,7 @@ class WanTI2V:
         t5_cpu=False,
         init_on_cpu=True,
         convert_model_dtype=False,
+        use_pi3_condition=True,
         trainable=False,
     ):
         r"""
@@ -84,6 +85,7 @@ class WanTI2V:
         self.param_dtype = config.param_dtype
         self.trainable = trainable
         self.latent_adapter = None
+        self.use_pi3_condition = use_pi3_condition
 
         if t5_fsdp or dit_fsdp or use_sp:
             self.init_on_cpu = False
@@ -112,6 +114,7 @@ class WanTI2V:
             shard_fn=shard_fn,
             convert_model_dtype=convert_model_dtype,
             trainable=trainable)
+        self._align_patch_embedding_for_conditioning()
 
         if use_sp:
             self.sp_size = get_world_size()
@@ -119,6 +122,55 @@ class WanTI2V:
             self.sp_size = 1
 
         self.sample_neg_prompt = config.sample_neg_prompt
+
+    def _align_patch_embedding_for_conditioning(self) -> None:
+        """
+        When PI3 conditioning is enabled, ensure the patch embedding expects concatenated
+        RGB and conditioning channels by seeding the extra slice with the pretrained RGB weights.
+        """
+        if not self.use_pi3_condition:
+            return
+
+        patch_embedding = getattr(self.model, "patch_embedding", None)
+        if patch_embedding is None:
+            return
+
+        base_channels = self.vae.model.z_dim
+        expected_channels = base_channels * 2
+        weight = getattr(patch_embedding, "weight", None)
+        if weight is None or weight.dim() != 5:
+            return
+
+        if patch_embedding.in_channels not in (base_channels, expected_channels):
+            return
+
+        if patch_embedding.in_channels == expected_channels:
+            with torch.no_grad():
+                rgb_weights = weight[:, :base_channels].clone()
+                weight[:, base_channels:expected_channels] = rgb_weights
+            return
+
+        bias = patch_embedding.bias
+        new_patch = torch.nn.Conv3d(
+            in_channels=expected_channels,
+            out_channels=patch_embedding.out_channels,
+            kernel_size=patch_embedding.kernel_size,
+            stride=patch_embedding.stride,
+            padding=patch_embedding.padding,
+            dilation=patch_embedding.dilation,
+            groups=patch_embedding.groups,
+            bias=bias is not None,
+            device=weight.device,
+            dtype=weight.dtype,
+        )
+        with torch.no_grad():
+            new_patch.weight.zero_()
+            rgb_weights = weight.clone()
+            new_patch.weight[:, :base_channels] = rgb_weights
+            new_patch.weight[:, base_channels:expected_channels] = rgb_weights
+            if bias is not None:
+                new_patch.bias.copy_(bias)
+        self.model.patch_embedding = new_patch
 
     def _configure_model(self, model, use_sp, dit_fsdp, shard_fn,
                          convert_model_dtype, trainable=False):
@@ -542,6 +594,9 @@ class WanTI2V:
         if n_prompt == "":
             n_prompt = self.sample_neg_prompt
 
+        if not self.use_pi3_condition:
+            video_condition = None
+
         # preprocess
         if not self.t5_cpu:
             self.text_encoder.model.to(self.device)
@@ -559,9 +614,8 @@ class WanTI2V:
         cond_latent = z[0]
         fused_latent = cond_latent
         pi3_condition_adapted = None
-        # Track base (RGB) channels and optional PI3 conditioning channels.
-        base_channels = cond_latent.shape[0]
-        pi3_channels = 0
+        channel_count = cond_latent.shape[0]
+        condition_channels = 0
         if video_condition is not None:
             cond = video_condition
             if isinstance(cond, list):
@@ -591,7 +645,7 @@ class WanTI2V:
                 cond = self.latent_adapter(cond.unsqueeze(0)).squeeze(0)
             pi3_condition_adapted = cond
             fused_latent = torch.cat([cond_latent, cond], dim=0)
-            pi3_channels = cond.shape[0]
+            condition_channels = channel_count if cond.shape[0] == channel_count else cond.shape[0]
 
 
         noise = torch.randn(
@@ -706,8 +760,8 @@ class WanTI2V:
                     channel_diff = fused_latent.shape[0] - noise_pred.shape[0]
                     if channel_diff > 0:
                         pad_shape = (channel_diff, *noise_pred.shape[1:])
-                        if channel_diff == pi3_channels and noise_pred.shape[0] >= pi3_channels:
-                            channel_fill = noise_pred[:pi3_channels].clone()
+                        if channel_diff == condition_channels and noise_pred.shape[0] >= condition_channels:
+                            channel_fill = noise_pred[:condition_channels].clone()
                         else:
                             channel_fill = torch.zeros(
                                 pad_shape, device=noise_pred.device, dtype=noise_pred.dtype)
@@ -729,10 +783,10 @@ class WanTI2V:
 
             if video_condition is not None:
                 final_latent = latent
-                rgb_latent = final_latent[:base_channels]
+                rgb_latent = final_latent[:channel_count]
                 pi3_latent = (
-                    final_latent[base_channels:base_channels + pi3_channels]
-                    if pi3_channels > 0 else None
+                    final_latent[channel_count:channel_count + condition_channels]
+                    if condition_channels > 0 else None
                 )
                 x0 = [rgb_latent]
             else:
