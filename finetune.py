@@ -58,6 +58,12 @@ def _parse_args() -> argparse.Namespace:
         help="Enable Pi3-guided conditioning; disable to finetune Wan without Pi3 inputs."
     )
     parser.add_argument(
+        "--concat-method",
+        default="channel",
+        choices=("channel", "frame", "width"),
+        help="How to fuse Pi3 latents with RGB latents: channel (default), frame, or width.",
+    )
+    parser.add_argument(
         "--prompt",
         required=True,
         help="Text prompt to condition Wan generation.")
@@ -208,6 +214,7 @@ def main():
         device=target_device,
         trainable_wan=True,
         use_pi3=args.use_pi3,
+        concat_method=args.concat_method,
     )
     guide.wan.model.train()
 
