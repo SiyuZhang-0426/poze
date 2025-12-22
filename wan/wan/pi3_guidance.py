@@ -20,6 +20,7 @@ class Pi3GuidedTI2V(nn.Module):
         wan_config,
         wan_checkpoint_dir: str,
         pi3_checkpoint: Optional[str] = None,
+        use_pi3: bool = True,
         device: str = "cuda",
         trainable_wan: bool = False,
         pi3_pretrained_id: str = "yyfz233/Pi3",
@@ -27,19 +28,23 @@ class Pi3GuidedTI2V(nn.Module):
         **wan_kwargs: Any,
     ):
         super().__init__()
+        self.use_pi3 = use_pi3
         self.device = torch.device(device)
-        if pi3_checkpoint is None:
-            self.pi3 = Pi3.from_pretrained(pi3_pretrained_id).to(self.device)
-        else:
-            self.pi3 = Pi3().to(self.device)
-            if pi3_checkpoint.endswith('.safetensors'):
-                from safetensors.torch import load_file
-                weight = load_file(pi3_checkpoint)
+        if self.use_pi3:
+            if pi3_checkpoint is None:
+                self.pi3 = Pi3.from_pretrained(pi3_pretrained_id).to(self.device)
             else:
-                weight = torch.load(pi3_checkpoint, map_location=self.device, weights_only=False)
-            # weights_only avoids executing pickled code; disable only if the checkpoint requires it.
-            self.pi3.load_state_dict(weight)
-        self.pi3.eval().requires_grad_(False)
+                self.pi3 = Pi3().to(self.device)
+                if pi3_checkpoint.endswith('.safetensors'):
+                    from safetensors.torch import load_file
+                    weight = load_file(pi3_checkpoint)
+                else:
+                    weight = torch.load(pi3_checkpoint, map_location=self.device, weights_only=False)
+                # weights_only avoids executing pickled code; disable only if the checkpoint requires it.
+                self.pi3.load_state_dict(weight)
+            self.pi3.eval().requires_grad_(False)
+        else:
+            self.pi3 = None
 
         device_id = (self.device.index or 0) if self.device.type == "cuda" else 0
         self.wan = WanTI2V(
@@ -49,46 +54,49 @@ class Pi3GuidedTI2V(nn.Module):
             rank=0,
             trainable=trainable_wan,
             convert_model_dtype=False,
+            use_pi3_condition=self.use_pi3,
             **wan_kwargs,
         )
-        # Pi3 decoder latents concatenate the last two blocks, giving 2 * dec_embed_dim channels.
-        # The adapter expects that full volume as input before projecting into the VAE latent space.
-        pi3_channel_dim = 2 * self.pi3.dec_embed_dim
-        self.latent_adapter = nn.Conv3d(
-            in_channels=pi3_channel_dim,
-            out_channels=self.wan.vae.model.z_dim,
-            kernel_size=1,
-        ).to(self.device)
-        # Recover Pi3 latents (from diffusion output) back into decoder token space for per-frame decoding.
-        self.pi3_recover_adapter = nn.Conv3d(
-            in_channels=self.wan.vae.model.z_dim,
-            out_channels=pi3_channel_dim,
-            kernel_size=1,
-        ).to(self.device)
-        with torch.no_grad():
-            # Seed with a channel-copy identity so image latents stay intact while Pi3 features are blended in.
-            self.latent_adapter.weight.zero_()
-            if self.latent_adapter.bias is not None:
-                self.latent_adapter.bias.zero_()
-            shared = min(
-                self.latent_adapter.in_channels,
-                self.latent_adapter.out_channels,
-            )
-            for i in range(shared):
-                self.latent_adapter.weight[i, i, 0, 0, 0] = 1.0
-            # Mirror the identity-style init for the recovery adapter so round-tripping is stable before finetuning.
-            self.pi3_recover_adapter.weight.zero_()
-            if self.pi3_recover_adapter.bias is not None:
-                self.pi3_recover_adapter.bias.zero_()
-            shared_recover = min(
-                self.pi3_recover_adapter.in_channels,
-                self.pi3_recover_adapter.out_channels,
-            )
-            for i in range(shared_recover):
-                self.pi3_recover_adapter.weight[i, i, 0, 0, 0] = 1.0
-        self.wan.latent_adapter = self.latent_adapter
-        # test, comment out
-        # self._align_patch_embedding_for_pi3()
+        if self.use_pi3:
+            # Pi3 decoder latents concatenate the last two blocks, giving 2 * dec_embed_dim channels.
+            # The adapter expects that full volume as input before projecting into the VAE latent space.
+            pi3_channel_dim = 2 * self.pi3.dec_embed_dim
+            self.latent_adapter = nn.Conv3d(
+                in_channels=pi3_channel_dim,
+                out_channels=self.wan.vae.model.z_dim,
+                kernel_size=1,
+            ).to(self.device)
+            # Recover Pi3 latents (from diffusion output) back into decoder token space for per-frame decoding.
+            self.pi3_recover_adapter = nn.Conv3d(
+                in_channels=self.wan.vae.model.z_dim,
+                out_channels=pi3_channel_dim,
+                kernel_size=1,
+            ).to(self.device)
+            with torch.no_grad():
+                # Seed with a channel-copy identity so image latents stay intact while Pi3 features are blended in.
+                self.latent_adapter.weight.zero_()
+                if self.latent_adapter.bias is not None:
+                    self.latent_adapter.bias.zero_()
+                shared = min(
+                    self.latent_adapter.in_channels,
+                    self.latent_adapter.out_channels,
+                )
+                for i in range(shared):
+                    self.latent_adapter.weight[i, i, 0, 0, 0] = 1.0
+                # Mirror the identity-style init for the recovery adapter so round-tripping is stable before finetuning.
+                self.pi3_recover_adapter.weight.zero_()
+                if self.pi3_recover_adapter.bias is not None:
+                    self.pi3_recover_adapter.bias.zero_()
+                shared_recover = min(
+                    self.pi3_recover_adapter.in_channels,
+                    self.pi3_recover_adapter.out_channels,
+                )
+                for i in range(shared_recover):
+                    self.pi3_recover_adapter.weight[i, i, 0, 0, 0] = 1.0
+            self.wan.latent_adapter = self.latent_adapter
+        else:
+            self.latent_adapter = None
+            self.pi3_recover_adapter = None
 
     def _align_patch_embedding_for_pi3(self) -> None:
         """
@@ -171,6 +179,10 @@ class Pi3GuidedTI2V(nn.Module):
         return padded.reshape(*leading_shape, c, target_h, target_w)
 
     def _prepare_image_inputs(self, image) -> Tuple[torch.Tensor, Any]:
+        if not self.use_pi3:
+            pil = image if hasattr(image, "mode") and image.mode == "RGB" else image.convert("RGB")
+            tensor = TF.to_tensor(pil).unsqueeze(0).unsqueeze(0)
+            return tensor.to(self.device), pil
         if isinstance(image, torch.Tensor):
             tensor = image
             if tensor.dim() == 3:
@@ -293,17 +305,19 @@ class Pi3GuidedTI2V(nn.Module):
 
     def generate_with_3d(self, prompt: str, image, enable_grad: bool = False, **kwargs) -> Dict[str, Any]:
         imgs, pil_image = self._prepare_image_inputs(image)
-        with torch.no_grad():
-            pi3_out = self.pi3(imgs, return_latents=True)
-        latents = pi3_out['latents']
-        latent_volume = self._build_latent_volume(latents)
+        video_condition = None
+        if self.use_pi3:
+            with torch.no_grad():
+                pi3_out = self.pi3(imgs, return_latents=True)
+            latents = pi3_out['latents']
+            latent_volume = self._build_latent_volume(latents)
+            video_condition = latent_volume
         if enable_grad:
             kwargs.setdefault("offload_model", False)
-        # test, set video_condition to None
         generated = self.wan.generate(
             prompt,
             img=pil_image,
-            video_condition=None,
+            video_condition=video_condition,
             enable_grad=enable_grad,
             return_latents=True,
             **kwargs,
@@ -340,6 +354,8 @@ class Pi3GuidedTI2V(nn.Module):
             losses['video'] = F.mse_loss(outputs['video'], gt_video)
             total_loss = total_loss + video_weight * losses['video']
         if gt_points is not None:
+            if not self.use_pi3:
+                raise ValueError("Point supervision training requires Pi3 conditioning to be enabled. Set use_pi3=True to enable this feature.")
             losses['points'] = F.l1_loss(outputs['pi3']['points'], gt_points)
             total_loss = total_loss + point_weight * losses['points']
         outputs['loss'] = total_loss

@@ -52,6 +52,12 @@ def _parse_args() -> argparse.Namespace:
         default="yyfz233/Pi3",
         help="HuggingFace model id for Pi3 when no checkpoint is provided.")
     parser.add_argument(
+        "--use-pi3",
+        type=str2bool,
+        default=True,
+        help="Enable Pi3-guided conditioning; disable to finetune Wan without Pi3 inputs."
+    )
+    parser.add_argument(
         "--prompt",
         required=True,
         help="Text prompt to condition Wan generation.")
@@ -201,6 +207,7 @@ def main():
         pi3_pretrained_id=args.pi3_pretrained_id,
         device=target_device,
         trainable_wan=True,
+        use_pi3=args.use_pi3,
     )
     guide.wan.model.train()
 

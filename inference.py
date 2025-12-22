@@ -56,6 +56,12 @@ def _parse_args() -> argparse.Namespace:
         help="HuggingFace model id for Pi3 when no checkpoint is provided."
     )
     parser.add_argument(
+        "--use-pi3",
+        type=str2bool,
+        default=True,
+        help="Enable Pi3-guided conditioning; set false to run Wan TI2V without Pi3."
+    )
+    parser.add_argument(
         "--prompt",
         default="A drone flythrough of a canyon",
         help="Text prompt for generation."
@@ -132,6 +138,7 @@ def main():
         pi3_pretrained_id=args.pi3_pretrained_id,
         device=args.device,
         trainable_wan=False,
+        use_pi3=args.use_pi3,
     )
 
     logging.info("Running generation...")
