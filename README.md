@@ -31,7 +31,7 @@ Options: `--pi3-id`, `--wan-id`, and `--revision` allow pointing to custom repos
 ## Scripts
 - `scripts/hf_download.sh`: downloads Pi3 and Wan checkpoints using the lowercase `hf_token` environment variable (run `export hf_token=$HF_TOKEN` if you already have an uppercase token set). Run from repo root with `bash scripts/hf_download.sh`.
 - `scripts/pi3inference.sh`: Slurm+Apptainer example for the upstream Pi3 demo (`pi3/example.py`). Update the project path, `--data-path`, and partition (`$vp`) to match your cluster, then submit with `sbatch scripts/pi3inference.sh`.
-- `scripts/pozeinference.sh`: Slurm+Apptainer example that wraps `inference.py` with Pi3 guidance. Edit the image path, prompt, checkpoint locations, and cluster settings, then submit via `sbatch scripts/pozeinference.sh`.
+- `scripts/pozeinference.sh`: Slurm+Apptainer example that wraps `inference.py` with Pi3 guidance. Edit the image path, prompt, checkpoint locations, and cluster settings, then submit via `sbatch scripts/pozeinference.sh` (or run the python command inside the script directly on a workstation).
 - `scripts/pozefinetune.sh`: empty placeholder for a similar Slurm entrypoint to finetune; duplicate `pozeinference.sh` as a starting template (or mirror its commands) and fill in your dataset/paths.
 
 ## Inference
@@ -49,6 +49,23 @@ python inference.py \
 - `--save-pi3`: save Pi3 decodes.
 - `--frame-num`: override the config’s default video length.
 - `--offload-model`: optional; pass `true` or `false` (common boolean strings like `yes/no/1/0` also work) to control Wan CPU offloading. If omitted, it defaults to true.
+- `--wan-config`: choose another Wan config key (defaults to `ti2v-5B`).
+- `--use-pi3`: set false to disable Pi3 conditioning (runs plain Wan TI2V).
+- `--pi3-checkpoint` / `--pi3-pretrained-id`: point to local Pi3 weights or a HF id.
+- `--output`: override the auto-named mp4 path under `outputs/`.
+
+Another inference example with extra outputs and fixed length:
+```bash
+python inference.py \
+  --wan-ckpt-dir ./Wan2.2-TI2V-5B \
+  --image ./data/ref.png \
+  --prompt "A robot walking through neon streets" \
+  --frame-num 32 \
+  --offload-model true \
+  --save-latents outputs/robot_latents.pt \
+  --save-pi3 outputs/robot_pi3.pt \
+  --output outputs/robot.mp4
+```
 
 ## Finetune
 Finetuning optimizes Wan while keeping Pi3 frozen. Provide at least one supervision signal (`--gt-video` or `--gt-points`).
@@ -67,3 +84,23 @@ Ground-truth tensors should match the script expectations: video as a torch tens
 - Uses MSE on video and L1 on Pi3 points, weighted by `--video-weight` and `--point-weight`.
 - Supports automatic mixed precision (AMP) and optional gradient clipping.
 - Saves checkpoints at `--save-every` intervals or on completion.
+- Keep `--offload-model` false for training (offloading slows optimization); use `--amp true` (default) for lower VRAM, and `--max-grad-norm` to clip gradients.
+- Override length with `--frame-num`; choose a different config via `--wan-config`.
+- `--log-every` controls logging frequency; `--save-every` >0 writes intermediate Wan checkpoints to `--save-dir`.
+
+Finetune example with point supervision, AMP, and periodic checkpoints:
+```bash
+python finetune.py \
+  --wan-ckpt-dir ./Wan2.2-TI2V-5B \
+  --prompt "A walk through a forest" \
+  --image ref.png \
+  --gt-points data/points.pt \
+  --steps 100 \
+  --lr 5e-6 \
+  --video-weight 1.0 \
+  --point-weight 0.5 \
+  --amp true \
+  --max-grad-norm 1.0 \
+  --save-every 20 \
+  --save-dir finetune_outputs/forest_run
+```
