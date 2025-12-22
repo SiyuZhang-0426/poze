@@ -675,10 +675,7 @@ class WanTI2V:
 
 
         noise = torch.randn(
-            fused_latent.shape[0],
-            latent_frames,
-            latent_h,
-            latent_w,
+            fused_latent.shape,
             dtype=torch.float32,
             device=self.device,
             generator=seed_g,
