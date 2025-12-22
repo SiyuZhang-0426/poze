@@ -636,9 +636,15 @@ class WanTI2V:
                 cond = cond[0]
             cond = cond.to(device=self.device, dtype=cond_latent.dtype)
             if cond.shape[1:] != cond_latent.shape[1:]:
+                # Preserve temporal length for frame-wise fusion; only match spatial dims.
+                target_size = cond_latent.shape[1:] if concat_method != "frame" else (
+                    cond.shape[1],
+                    cond_latent.shape[2],
+                    cond_latent.shape[3],
+                )
                 cond = torch.nn.functional.interpolate(
                     cond.unsqueeze(0),
-                    size=cond_latent.shape[1:],
+                    size=target_size,
                     mode="trilinear",
                     align_corners=False,
                 ).squeeze(0)
