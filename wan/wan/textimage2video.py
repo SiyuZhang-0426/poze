@@ -623,6 +623,9 @@ class WanTI2V:
         pi3_condition_adapted = None
         channel_count = cond_latent.shape[0]
         condition_channels = 0
+        latent_frames = (frame_count - 1) // self.vae_stride[0] + 1
+        latent_h = fused_latent.shape[2]
+        latent_w = fused_latent.shape[3]
         concat_method = getattr(self, "concat_method", "channel")
         if video_condition is not None:
             cond = video_condition
@@ -665,13 +668,16 @@ class WanTI2V:
         # Recompute sequence length from the fused latent dimensions (frames × spatial patches);
         # fused_latent falls back to cond_latent when no Pi3 conditioning is provided.
         seq_len = int(math.ceil(
-            (fused_latent.shape[2] * fused_latent.shape[3]) /
+            (latent_h * latent_w) /
             (self.patch_size[1] * self.patch_size[2]) *
-            fused_latent.shape[1] / self.sp_size)) * self.sp_size
+            latent_frames / self.sp_size)) * self.sp_size
 
 
-        noise = torch.randn_like(
-            fused_latent,
+        noise = torch.randn(
+            fused_latent.shape[0],
+            latent_frames,
+            latent_h,
+            latent_w,
             dtype=torch.float32,
             device=self.device,
             generator=seed_g,
