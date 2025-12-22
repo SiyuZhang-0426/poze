@@ -28,10 +28,10 @@ python download_checkpoints.py \
 Options: `--pi3-id`, `--wan-id`, and `--revision` allow pointing to custom repos/tags.
 
 ## Scripts
-- `scripts/hf_download.sh`: downloads Pi3 and Wan checkpoints using the `hf_token` environment variable. Run from repo root with `bash scripts/hf_download.sh`.
+- `scripts/hf_download.sh`: downloads Pi3 and Wan checkpoints using the lowercase `hf_token` environment variable (e.g., `export hf_token=$HF_TOKEN`). Run from repo root with `bash scripts/hf_download.sh`.
 - `scripts/pi3inference.sh`: Slurm+Apptainer example for the upstream Pi3 demo (`pi3/example.py`). Update the project path, `--data-path`, and partition (`$vp`) to match your cluster, then submit with `sbatch scripts/pi3inference.sh`.
 - `scripts/pozeinference.sh`: Slurm+Apptainer example that wraps `inference.py` with Pi3 guidance. Edit the image path, prompt, checkpoint locations, and cluster settings, then submit via `sbatch scripts/pozeinference.sh`.
-- `scripts/pozefinetune.sh`: placeholder for a similar Slurm entrypoint to finetune; copy the inference pattern and fill in your dataset/paths.
+- `scripts/pozefinetune.sh`: empty placeholder for a similar Slurm entrypoint to finetune; copy `pozeinference.sh` as a template and fill in your dataset/paths.
 
 ## Inference
 Generate a video with Pi3 guidance:
