@@ -662,6 +662,8 @@ class WanTI2V:
                 raise ValueError(f"Unsupported concat_method: {concat_method}")
             condition_channels = cond.shape[0]
 
+        # Recompute sequence length from the fused latent dimensions (frames × spatial patches);
+        # fused_latent falls back to cond_latent when no Pi3 conditioning is provided.
         seq_len = int(math.ceil(
             (fused_latent.shape[2] * fused_latent.shape[3]) /
             (self.patch_size[1] * self.patch_size[2]) *
@@ -671,6 +673,7 @@ class WanTI2V:
         noise = torch.randn_like(
             fused_latent,
             dtype=torch.float32,
+            device=self.device,
             generator=seed_g,
         )
 
@@ -796,11 +799,22 @@ class WanTI2V:
                         final_latent[channel_count:channel_count + condition_channels]
                         if condition_channels > 0 else None
                     )
-                    x0 = [rgb_latent]
+                    output_latent = rgb_latent
+                elif concat_method == "frame":
+                    # Decode with the fused latent so the frame dimension reflects the concatenation.
+                    rgb_latent = final_latent[:, :cond_latent.shape[1], :, :]
+                    pi3_latent = final_latent[:, cond_latent.shape[1]:, :, :]
+                    output_latent = final_latent
+                elif concat_method == "width":
+                    # Decode with the fused latent so the spatial width reflects the concatenation.
+                    rgb_latent = final_latent[:, :, :, :cond_latent.shape[3]]
+                    pi3_latent = final_latent[:, :, :, cond_latent.shape[3]:]
+                    output_latent = final_latent
                 else:
-                    rgb_latent = final_latent
                     pi3_latent = None
-                    x0 = [rgb_latent]
+                    rgb_latent = final_latent
+                    output_latent = final_latent
+                x0 = [output_latent]
             else:
                 x0 = [latent]
 
