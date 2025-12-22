@@ -62,6 +62,12 @@ def _parse_args() -> argparse.Namespace:
         help="Enable Pi3-guided conditioning; set false to run Wan TI2V without Pi3."
     )
     parser.add_argument(
+        "--concat-method",
+        default="channel",
+        choices=("channel", "frame", "width"),
+        help="How to fuse Pi3 latents with RGB latents: channel (default), frame, or width.",
+    )
+    parser.add_argument(
         "--prompt",
         default="A drone flythrough of a canyon",
         help="Text prompt for generation."
@@ -139,6 +145,7 @@ def main():
         device=args.device,
         trainable_wan=False,
         use_pi3=args.use_pi3,
+        concat_method=args.concat_method,
     )
 
     logging.info("Running generation...")

@@ -25,6 +25,7 @@ class Pi3GuidedTI2V(nn.Module):
         trainable_wan: bool = False,
         pi3_pretrained_id: str = "yyfz233/Pi3",
         pi3_weights_only: bool = True,
+        concat_method: str = "channel",
         **wan_kwargs: Any,
     ):
         super().__init__()
@@ -55,6 +56,7 @@ class Pi3GuidedTI2V(nn.Module):
             trainable=trainable_wan,
             convert_model_dtype=False,
             use_pi3_condition=self.use_pi3,
+            concat_method=concat_method,
             **wan_kwargs,
         )
         if self.use_pi3:

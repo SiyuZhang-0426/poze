@@ -48,6 +48,7 @@ class WanTI2V:
         convert_model_dtype=False,
         use_pi3_condition=True,
         trainable=False,
+        concat_method: str = "channel",
     ):
         r"""
         Initializes the Wan text-to-video generation model components.
@@ -86,6 +87,12 @@ class WanTI2V:
         self.trainable = trainable
         self.latent_adapter = None
         self.use_pi3_condition = use_pi3_condition
+        valid_concat = {"channel", "frame", "width"}
+        if concat_method not in valid_concat:
+            raise ValueError(
+                f"Unsupported concat_method={concat_method}. Choose from {sorted(valid_concat)}."
+            )
+        self.concat_method = concat_method
 
         if t5_fsdp or dit_fsdp or use_sp:
             self.init_on_cpu = False
@@ -128,7 +135,7 @@ class WanTI2V:
         When PI3 conditioning is enabled, ensure the patch embedding expects concatenated
         RGB and conditioning channels by seeding the extra slice with the pretrained RGB weights.
         """
-        if not self.use_pi3_condition:
+        if not self.use_pi3_condition or self.concat_method != "channel":
             return
 
         patch_embedding = getattr(self.model, "patch_embedding", None)
@@ -616,6 +623,7 @@ class WanTI2V:
         pi3_condition_adapted = None
         channel_count = cond_latent.shape[0]
         condition_channels = 0
+        concat_method = getattr(self, "concat_method", "channel")
         if video_condition is not None:
             cond = video_condition
             if isinstance(cond, list):
@@ -644,28 +652,27 @@ class WanTI2V:
             if can_project:
                 cond = self.latent_adapter(cond.unsqueeze(0)).squeeze(0)
             pi3_condition_adapted = cond
-            fused_latent = torch.cat([cond_latent, cond], dim=0)
+            if concat_method == "channel":
+                fused_latent = torch.cat([cond_latent, cond], dim=0)
+            elif concat_method == "frame":
+                fused_latent = torch.cat([cond_latent, cond], dim=1)
+            elif concat_method == "width":
+                fused_latent = torch.cat([cond_latent, cond], dim=3)
+            else:
+                raise ValueError(f"Unsupported concat_method: {concat_method}")
             condition_channels = cond.shape[0]
 
+        seq_len = int(math.ceil(
+            (fused_latent.shape[2] * fused_latent.shape[3]) /
+            (self.patch_size[1] * self.patch_size[2]) *
+            fused_latent.shape[1] / self.sp_size)) * self.sp_size
 
-        noise = torch.randn(
-            self.vae.model.z_dim,
-            (frame_count - 1) // self.vae_stride[0] + 1,
-            oh // self.vae_stride[1],
-            ow // self.vae_stride[2],
+
+        noise = torch.randn_like(
+            fused_latent,
             dtype=torch.float32,
             generator=seed_g,
-            device=self.device)
-
-        if video_condition is not None:
-            noise = torch.randn(
-                self.vae.model.z_dim * 2,
-                (frame_count - 1) // self.vae_stride[0] + 1,
-                oh // self.vae_stride[1],
-                ow // self.vae_stride[2],
-                dtype=torch.float32,
-                generator=seed_g,
-                device=self.device)
+        )
 
 
         @contextmanager
@@ -783,12 +790,17 @@ class WanTI2V:
 
             if video_condition is not None:
                 final_latent = latent
-                rgb_latent = final_latent[:channel_count]
-                pi3_latent = (
-                    final_latent[channel_count:channel_count + condition_channels]
-                    if condition_channels > 0 else None
-                )
-                x0 = [rgb_latent]
+                if concat_method == "channel":
+                    rgb_latent = final_latent[:channel_count]
+                    pi3_latent = (
+                        final_latent[channel_count:channel_count + condition_channels]
+                        if condition_channels > 0 else None
+                    )
+                    x0 = [rgb_latent]
+                else:
+                    rgb_latent = final_latent
+                    pi3_latent = None
+                    x0 = [rgb_latent]
             else:
                 x0 = [latent]
 
