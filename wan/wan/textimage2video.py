@@ -623,9 +623,6 @@ class WanTI2V:
         pi3_condition_adapted = None
         channel_count = cond_latent.shape[0]
         condition_channels = 0
-        latent_frames = (frame_count - 1) // self.vae_stride[0] + 1
-        latent_h = fused_latent.shape[2]
-        latent_w = fused_latent.shape[3]
         concat_method = getattr(self, "concat_method", "channel")
         if video_condition is not None:
             cond = video_condition
@@ -664,6 +661,10 @@ class WanTI2V:
             else:
                 raise ValueError(f"Unsupported concat_method: {concat_method}")
             condition_channels = cond.shape[0]
+
+        latent_frames = fused_latent.shape[1]
+        latent_h = fused_latent.shape[2]
+        latent_w = fused_latent.shape[3]
 
         # Recompute sequence length from the fused latent dimensions (frames × spatial patches);
         # fused_latent falls back to cond_latent when no Pi3 conditioning is provided.
