@@ -7,6 +7,7 @@ Poze (project name) pairs Pi3 3D reconstruction with Wan2.2 text/image-to-video.
 - The Pi3 decoder tokens are reshaped back to a spatial grid, resized to Wan’s latent resolution, and concatenated channel-wise with the encoded RGB latents before diffusion (no `extra_context` tokens).
 - Wan receives this fused latent volume together with the text prompt to generate a temporally consistent video.
 - Pi3 stays frozen by default; Wan can be kept frozen for inference or marked trainable for finetuning. Poze also decodes Pi3 latents to return points/depth/RGB alongside the generated video.
+- Pi3 latents are fed through a 1×1×1 adapter (seeded as an identity copy of the RGB channels) and Wan’s patch embedding duplicates the RGB weights for the Pi3 half. Inputs are padded to the Pi3 patch size, and decoder tokens are reshaped to `(B, C, F, H, W)` before being fused with Wan latents—this padding/reshaping resolves the Pi3-vs-Wan shape mismatch.
 
 ## Environment
 - Python ≥3.10, PyTorch ≥2.4 with CUDA.
@@ -25,6 +26,12 @@ python download_checkpoints.py \
   --token $HF_TOKEN
 ```
 Options: `--pi3-id`, `--wan-id`, and `--revision` allow pointing to custom repos/tags.
+
+## Scripts
+- `scripts/hf_download.sh`: downloads Pi3 and Wan checkpoints using the `hf_token` environment variable. Run from repo root with `bash scripts/hf_download.sh`.
+- `scripts/pi3inference.sh`: Slurm+Apptainer example for the upstream Pi3 demo (`pi3/example.py`). Update the project path, `--data-path`, and partition (`$vp`) to match your cluster, then submit with `sbatch scripts/pi3inference.sh`.
+- `scripts/pozeinference.sh`: Slurm+Apptainer example that wraps `inference.py` with Pi3 guidance. Edit the image path, prompt, checkpoint locations, and cluster settings, then submit via `sbatch scripts/pozeinference.sh`.
+- `scripts/pozefinetune.sh`: placeholder for a similar Slurm entrypoint to finetune; copy the inference pattern and fill in your dataset/paths.
 
 ## Inference
 Generate a video with Pi3 guidance:
