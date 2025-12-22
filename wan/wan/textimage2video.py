@@ -822,6 +822,7 @@ class WanTI2V:
                     # Decode with the fused latent so the spatial width reflects the concatenation.
                     rgb_latent = final_latent[:, :, :, :cond_latent.shape[3]]
                     pi3_latent = final_latent[:, :, :, cond_latent.shape[3]:]
+                    # if only want rgb latent, set output_latent to rgb_latent
                     output_latent = final_latent
                 else:
                     pi3_latent = None
