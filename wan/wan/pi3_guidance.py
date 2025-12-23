@@ -10,6 +10,9 @@ from pi3.models.pi3 import Pi3
 from .textimage2video import WanTI2V
 
 
+DEFAULT_FRAME_NUM = 81
+
+
 class Pi3GuidedTI2V(nn.Module):
     """
     Pipeline that freezes Pi3, adapts its latents, and optionally finetunes Wan2.2 TI2V.
@@ -246,8 +249,11 @@ class Pi3GuidedTI2V(nn.Module):
             target_dtype = target_latent.dtype
         else:
             target_size = tuple(target_latent)
+            if len(target_size) != 3:
+                raise ValueError(f"target_latent must describe (frames, height, width); got {target_size}")
             target_device = self.device
             target_dtype = pi3_latent.dtype
+        # Fallback to channel concatenation when Wan is not configured for Pi3 conditioning.
         concat_method = concat_method or getattr(self.wan, "concat_method", "channel")
         if concat_method == "frame":
             target_size = (pi3_latent.shape[2], target_size[-2], target_size[-1])
@@ -263,7 +269,7 @@ class Pi3GuidedTI2V(nn.Module):
     def recover_pi3_latents(
         self,
         pi3_latent: torch.Tensor,
-        target_size: Tuple[int, int, int],
+        target_size: Optional[Tuple[int, int, int]],
     ) -> Optional[torch.Tensor]:
         """
         Recover Pi3 decoder-space latents from diffusion outputs via interpolation + Conv3d.
@@ -271,6 +277,8 @@ class Pi3GuidedTI2V(nn.Module):
         if self.pi3_recover_adapter is None:
             return None
         if pi3_latent is None:
+            return None
+        if target_size is None:
             return None
         if isinstance(pi3_latent, list):
             if len(pi3_latent) == 0:
@@ -390,7 +398,7 @@ class Pi3GuidedTI2V(nn.Module):
             latents = pi3_out['latents']
             latent_volume = self._build_latent_volume(latents)
             pi3_target_size = latent_volume.shape[2:]
-            default_frame_num = getattr(self.wan.config, "frame_num", 81) if hasattr(self.wan, "config") else 81
+            default_frame_num = getattr(self.wan.config, "frame_num", DEFAULT_FRAME_NUM) if hasattr(self.wan, "config") else DEFAULT_FRAME_NUM
             frame_num = kwargs.get("frame_num", default_frame_num)
             # Match Wan VAE latent geometry: temporal downsample via stride[0] and spatial downsample via stride[1:].
             target_latent_size = (
@@ -418,7 +426,9 @@ class Pi3GuidedTI2V(nn.Module):
             rgb_latent = generated.get("rgb_latent")
             pi3_latent = generated.get("pi3_latent")
             if pi3_latent is not None and pi3_target_size is not None:
-                pi3_latent = self.recover_pi3_latents(pi3_latent, pi3_target_size)
+                recovered_pi3 = self.recover_pi3_latents(pi3_latent, pi3_target_size)
+                if recovered_pi3 is not None:
+                    pi3_latent = recovered_pi3
         else:
             video = generated
             rgb_latent = None
