@@ -34,16 +34,19 @@ from wan.utils.utils import str2bool  # noqa: E402
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Finetune Wan TI2V with Pi3-guided latents.")
+        description="Finetune Wan TI2V with Pi3-guided latents."
+    )
     parser.add_argument(
         "--wan-ckpt-dir",
         required=True,
-        help="Directory containing Wan2.2 TI2V checkpoints.")
+        help="Directory containing Wan2.2 TI2V checkpoints."
+    )
     parser.add_argument(
         "--wan-config",
         default="ti2v-5B",
         choices=list(configs.WAN_CONFIGS.keys()),
-        help="Wan TI2V config key to load.")
+        help="Wan TI2V config key to load."
+    )
     parser.add_argument(
         "--pi3-checkpoint",
         default=None,
@@ -52,7 +55,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--pi3-pretrained-id",
         default="yyfz233/Pi3",
-        help="HuggingFace model id for Pi3 when no checkpoint is provided.")
+        help="HuggingFace model id for Pi3 when no checkpoint is provided."
+    )
     parser.add_argument(
         "--use-pi3",
         type=str2bool,
@@ -68,11 +72,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--prompt",
         default=None,
-        help="Text prompt to condition Wan generation.")
+        help="Text prompt to condition Wan generation."
+    )
     parser.add_argument(
         "--image",
         default=None,
-        help="Reference image path used for TI2V conditioning.")
+        help="Reference image path used for TI2V conditioning."
+    )
     parser.add_argument(
         "--dataset-root",
         type=Path,
@@ -82,15 +88,18 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dataset-prompt-file",
         default="prompts.txt",
-        help="Relative prompt file inside dataset root.")
+        help="Relative prompt file inside dataset root."
+    )
     parser.add_argument(
         "--dataset-video-list",
         default="videos.txt",
-        help="Relative video list file inside dataset root.")
+        help="Relative video list file inside dataset root."
+    )
     parser.add_argument(
         "--dataset-image-dir",
         default="first_frames",
-        help="Relative directory of first-frame images inside dataset root.")
+        help="Relative directory of first-frame images inside dataset root."
+    )
     parser.add_argument(
         "--dataset-latent-dir",
         type=Path,
@@ -117,90 +126,108 @@ def _parse_args() -> argparse.Namespace:
         "--frame-num",
         type=int,
         default=None,
-        help="Number of frames to generate. Defaults to config.frame_num.")
+        help="Number of frames to generate. Defaults to config.frame_num."
+    )
     parser.add_argument(
         "--video-weight",
         type=float,
         default=1.0,
-        help="Weight for video reconstruction loss.")
+        help="Weight for video reconstruction loss."
+    )
     parser.add_argument(
         "--latent-weight",
         type=float,
         default=1.0,
-        help="Weight for latent reconstruction loss when cached Wan latents are available.")
+        help="Weight for latent reconstruction loss when cached Wan latents are available."
+    )
     parser.add_argument(
         "--point-weight",
         type=float,
         default=1.0,
-        help="Weight for point cloud reconstruction loss.")
+        help="Weight for point cloud reconstruction loss."
+    )
     parser.add_argument(
         "--lr",
         type=float,
         default=1e-5,
-        help="Learning rate for Wan finetuning.")
+        help="Learning rate for Wan finetuning."
+    )
     parser.add_argument(
         "--weight-decay",
         type=float,
         default=0.0,
-        help="Weight decay for the optimizer.")
+        help="Weight decay for the optimizer."
+    )
     parser.add_argument(
         "--steps",
         type=int,
         default=10,
-        help="Number of optimization steps to run.")
+        help="Number of optimization steps to run."
+    )
     parser.add_argument(
         "--log-every",
         type=int,
         default=1,
-        help="How often (in steps) to log losses.")
+        help="How often (in steps) to log losses."
+    )
     parser.add_argument(
         "--save-every",
         type=int,
         default=0,
-        help="Save a Wan checkpoint every N steps (0 disables interim checkpoints).")
+        help="Save a Wan checkpoint every N steps (0 disables interim checkpoints)."
+    )
     parser.add_argument(
         "--save-dir",
         type=Path,
         default=REPO_ROOT / "finetune_outputs",
-        help="Directory to store checkpoints.")
+        help="Directory to store checkpoints."
+    )
     parser.add_argument(
         "--batch-size",
         type=int,
         default=1,
-        help="Batch size for dataset finetuning. Only batch size 1 is supported.")
+        help="Batch size for dataset finetuning. Only batch size 1 is supported."
+    )
     parser.add_argument(
         "--num-workers",
         type=int,
         default=0,
-        help="Number of worker processes for the dataset DataLoader.")
+        help="Number of worker processes for the dataset DataLoader."
+    )
     parser.add_argument(
         "--no-shuffle",
         action="store_true",
-        help="Disable dataset shuffling during finetuning.")
+        help="Disable dataset shuffling during finetuning."
+    )
     parser.add_argument(
         "--device",
         default="cuda",
-        help="Device string passed to Pi3GuidedTI2V, e.g., cuda or cpu.")
+        help="Device string passed to Pi3GuidedTI2V, e.g., cuda or cpu."
+    )
     parser.add_argument(
         "--offload-model",
         type=str2bool,
         default=False,
-        help="Offload Wan to CPU between steps. Keep False for finetuning.")
+        help="Offload Wan to CPU between steps. Keep False for finetuning."
+    )
     parser.add_argument(
         "--amp",
         type=str2bool,
         default=True,
-        help="Use torch.cuda.amp for mixed-precision training when available.")
+        help="Use torch.cuda.amp for mixed-precision training when available."
+    )
     parser.add_argument(
         "--max-grad-norm",
         type=float,
         default=None,
-        help="Optional gradient clipping norm.")
+        help="Optional gradient clipping norm."
+    )
     parser.add_argument(
         "--seed",
         type=int,
         default=None,
-        help="Optional random seed for reproducibility.")
+        help="Optional random seed for reproducibility."
+    )
     return parser.parse_args()
 
 
