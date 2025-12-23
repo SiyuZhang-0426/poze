@@ -226,7 +226,69 @@ class Pi3GuidedTI2V(nn.Module):
         )
         return tokens.permute(0, 4, 1, 2, 3).contiguous()
 
-    def _decode_pi3_latent_sequence(self, pi3_latent: torch.Tensor) -> Optional[Dict[str, Any]]:
+    def align_pi3_latent(
+        self,
+        pi3_latent: torch.Tensor,
+        target_latent: torch.Tensor,
+        concat_method: Optional[str] = None,
+    ) -> torch.Tensor:
+        """
+        Align Pi3 latent volume to Wan VAE latent geometry using interpolation + Conv3d projection.
+        """
+        if self.latent_adapter is None:
+            return pi3_latent
+        if pi3_latent.dim() == 4:
+            pi3_latent = pi3_latent.unsqueeze(0)
+        # Wan expects latents without a batch dimension; keep only spatial/frame sizes.
+        target_size = target_latent.shape[1:] if target_latent.dim() == 4 else target_latent.shape[-3:]
+        concat_method = concat_method or getattr(self.wan, "concat_method", "channel")
+        if concat_method == "frame":
+            target_size = (pi3_latent.shape[2], target_size[-2], target_size[-1])
+        aligned = F.interpolate(
+            pi3_latent.to(target_latent.device, target_latent.dtype),
+            size=target_size,
+            mode="trilinear",
+            align_corners=False,
+        )
+        projected = self.latent_adapter(aligned)
+        return projected.squeeze(0)
+
+    def recover_pi3_latents(
+        self,
+        pi3_latent: torch.Tensor,
+        target_size: Tuple[int, int, int],
+    ) -> Optional[torch.Tensor]:
+        """
+        Recover Pi3 decoder-space latents from diffusion outputs via interpolation + Conv3d.
+        """
+        if self.pi3_recover_adapter is None:
+            return None
+        if pi3_latent is None:
+            return None
+        if isinstance(pi3_latent, list):
+            if len(pi3_latent) == 0:
+                return None
+            pi3_latent = pi3_latent[0]
+        if pi3_latent.dim() == 4:
+            pi3_latent = pi3_latent.unsqueeze(0)
+        if pi3_latent.dim() != 5:
+            return None
+        resized = pi3_latent.to(self.device)
+        if target_size is not None and resized.shape[2:] != tuple(target_size):
+            resized = F.interpolate(
+                resized,
+                size=tuple(target_size),
+                mode="trilinear",
+                align_corners=False,
+            )
+        recovered = self.pi3_recover_adapter(resized)
+        return recovered.squeeze(0) if recovered.shape[0] == 1 else recovered
+
+    def _decode_pi3_latent_sequence(
+        self,
+        pi3_latent: torch.Tensor,
+        target_size: Optional[Tuple[int, int, int]] = None,
+    ) -> Optional[Dict[str, Any]]:
         """
         Recover dynamic Pi3 latents (returned by diffusion) back to Pi3 head inputs and decode them per frame.
 
@@ -248,11 +310,14 @@ class Pi3GuidedTI2V(nn.Module):
 
         if pi3_latent.dim() == 4:
             pi3_latent = pi3_latent.unsqueeze(0)
-        if pi3_latent.dim() != 5:
-            return None
+        target_size = target_size or pi3_latent.shape[-3:]
 
         with torch.no_grad():
-            recovered = self.pi3_recover_adapter(pi3_latent.to(self.device))
+            recovered = self.recover_pi3_latents(pi3_latent, target_size)
+            if recovered is None:
+                return None
+            if recovered.dim() == 4:
+                recovered = recovered.unsqueeze(0)
             b, c, f, h, w = recovered.shape
             # Rebuild decoder_hidden tokens (without registers) then prepend doubled register tokens.
             tokens = recovered.permute(0, 2, 3, 4, 1).reshape(b * f, h * w, c)
@@ -308,12 +373,21 @@ class Pi3GuidedTI2V(nn.Module):
     def generate_with_3d(self, prompt: str, image, enable_grad: bool = False, **kwargs) -> Dict[str, Any]:
         imgs, pil_image = self._prepare_image_inputs(image)
         video_condition = None
+        cond_latent_ref = None
+        pi3_target_size = None
         if self.use_pi3:
             with torch.no_grad():
                 pi3_out = self.pi3(imgs, return_latents=True)
             latents = pi3_out['latents']
             latent_volume = self._build_latent_volume(latents)
-            video_condition = latent_volume
+            pi3_target_size = latent_volume.shape[2:]
+            with torch.no_grad():
+                cond_latent_ref = self.wan.vae.encode([pil_image])[0]
+            video_condition = self.align_pi3_latent(
+                latent_volume,
+                cond_latent_ref,
+                concat_method=self.wan.concat_method,
+            )
         if enable_grad:
             kwargs.setdefault("offload_model", False)
         generated = self.wan.generate(
@@ -328,6 +402,8 @@ class Pi3GuidedTI2V(nn.Module):
             video = generated.get("video")
             rgb_latent = generated.get("rgb_latent")
             pi3_latent = generated.get("pi3_latent")
+            if pi3_latent is not None and pi3_target_size is not None:
+                pi3_latent = self.recover_pi3_latents(pi3_latent, pi3_target_size)
         else:
             video = generated
             rgb_latent = None
@@ -336,6 +412,7 @@ class Pi3GuidedTI2V(nn.Module):
         return {
             "video": video,
             "rgb_latent": rgb_latent,
+            "pi3_latent": pi3_latent,
             # "pi3_preds": pi3_preds,
         }
 
