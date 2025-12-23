@@ -110,6 +110,15 @@ class Pi3GuidedTI2V(nn.Module):
             return getattr(self.wan.config, "frame_num", DEFAULT_FRAME_NUM)
         return DEFAULT_FRAME_NUM
 
+    def _compute_target_latent_size(
+        self, latents_hw: Tuple[int, int], frame_num: int
+    ) -> Tuple[int, int, int]:
+        return (
+            (frame_num - 1) // self.wan.vae_stride[0] + 1,
+            math.ceil(latents_hw[0] / self.wan.vae_stride[1]),
+            math.ceil(latents_hw[1] / self.wan.vae_stride[2]),
+        )
+
     def _align_patch_embedding_for_pi3(self) -> None:
         """
         If the Wan patch embedding expects concatenated RGB + Pi3 channels, seed the
@@ -425,10 +434,8 @@ class Pi3GuidedTI2V(nn.Module):
             pi3_target_size = latent_volume.shape[2:]
             frame_num = self._get_frame_num(kwargs.get("frame_num"))
             # Match Wan VAE latent geometry: temporal downsample via stride[0] and spatial downsample via stride[1:].
-            target_latent_size = (
-                (frame_num - 1) // self.wan.vae_stride[0] + 1,
-                math.ceil(latents['hw'][0] / self.wan.vae_stride[1]),
-                math.ceil(latents['hw'][1] / self.wan.vae_stride[2]),
+            target_latent_size = self._compute_target_latent_size(
+                latents['hw'], frame_num
             )
             video_condition = self.align_pi3_latent(
                 latent_volume,
@@ -449,11 +456,11 @@ class Pi3GuidedTI2V(nn.Module):
             video = generated.get("video")
             rgb_latent = generated.get("rgb_latent")
             pi3_latent = generated.get("pi3_latent")
-            processed_pi3_latent = pi3_latent
             if pi3_latent is not None and pi3_target_size is not None:
                 recovered_pi3 = self.recover_pi3_latents(pi3_latent, pi3_target_size)
-                if recovered_pi3 is not None:
-                    processed_pi3_latent = recovered_pi3
+                processed_pi3_latent = recovered_pi3 if recovered_pi3 is not None else pi3_latent
+            else:
+                processed_pi3_latent = pi3_latent
         else:
             video = generated
             rgb_latent = None
