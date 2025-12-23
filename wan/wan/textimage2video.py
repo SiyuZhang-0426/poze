@@ -87,7 +87,7 @@ class WanTI2V:
         self.trainable = trainable
         self.latent_adapter = None
         self.use_pi3_condition = use_pi3_condition
-        valid_concat = {"channel", "frame", "width"}
+        valid_concat = {"channel", "frame", "width", "height"}
         if concat_method not in valid_concat:
             raise ValueError(
                 f"Unsupported concat_method={concat_method}. Choose from {sorted(valid_concat)}."
@@ -665,6 +665,8 @@ class WanTI2V:
                 fused_latent = torch.cat([cond_latent, cond], dim=1)
             elif concat_method == "width":
                 fused_latent = torch.cat([cond_latent, cond], dim=3)
+            elif concat_method == "height":
+                fused_latent = torch.cat([cond_latent, cond], dim=2)
             else:
                 raise ValueError(f"Unsupported concat_method: {concat_method}")
             condition_channels = cond.shape[0]
@@ -823,6 +825,11 @@ class WanTI2V:
                     rgb_latent = final_latent[:, :, :, :cond_latent.shape[3]]
                     pi3_latent = final_latent[:, :, :, cond_latent.shape[3]:]
                     # if only want rgb latent, set output_latent to rgb_latent
+                    output_latent = final_latent
+                elif concat_method == "height":
+                    # Decode with the fused latent so the spatial height reflects the concatenation.
+                    rgb_latent = final_latent[:, :, :cond_latent.shape[2], :]
+                    pi3_latent = final_latent[:, :, cond_latent.shape[2]:, :]
                     output_latent = final_latent
                 else:
                     pi3_latent = None
