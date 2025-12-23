@@ -275,6 +275,7 @@ class Pi3GuidedTI2V(nn.Module):
         if isinstance(pi3_latent, list):
             if len(pi3_latent) == 0:
                 return None
+            # Downstream callers only support a single conditioned sample; use the first item.
             pi3_latent = pi3_latent[0]
         if pi3_latent.dim() == 4:
             pi3_latent = pi3_latent.unsqueeze(0)
@@ -389,10 +390,9 @@ class Pi3GuidedTI2V(nn.Module):
             latents = pi3_out['latents']
             latent_volume = self._build_latent_volume(latents)
             pi3_target_size = latent_volume.shape[2:]
-            frame_num = kwargs.get(
-                "frame_num",
-                getattr(getattr(self.wan, "config", None), "frame_num", 81),
-            )
+            default_frame_num = getattr(self.wan.config, "frame_num", 81) if hasattr(self.wan, "config") else 81
+            frame_num = kwargs.get("frame_num", default_frame_num)
+            # Match Wan VAE latent geometry: temporal downsample via stride[0] and spatial downsample via stride[1:].
             target_latent_size = (
                 (frame_num - 1) // self.wan.vae_stride[0] + 1,
                 math.ceil(latents['hw'][0] / self.wan.vae_stride[1]),
