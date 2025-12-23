@@ -1,5 +1,5 @@
 import math
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -102,6 +102,13 @@ class Pi3GuidedTI2V(nn.Module):
         else:
             self.latent_adapter = None
             self.pi3_recover_adapter = None
+
+    def _get_frame_num(self, override: Optional[int]) -> int:
+        if override is not None:
+            return override
+        if hasattr(self.wan, "config"):
+            return getattr(self.wan.config, "frame_num", DEFAULT_FRAME_NUM)
+        return DEFAULT_FRAME_NUM
 
     def _align_patch_embedding_for_pi3(self) -> None:
         """
@@ -276,14 +283,14 @@ class Pi3GuidedTI2V(nn.Module):
 
     def recover_pi3_latents(
         self,
-        pi3_latent: torch.Tensor,
+        pi3_latent: Union[torch.Tensor, List[torch.Tensor]],
         target_size: Optional[Tuple[int, int, int]],
     ) -> Optional[torch.Tensor]:
         """
         Recover Pi3 decoder-space latents from diffusion outputs via interpolation + Conv3d.
 
         Args:
-            pi3_latent: Diffusion output slice shaped (C, F, H, W) or (B, C, F, H, W), or a list.
+            pi3_latent: Diffusion output slice shaped (C, F, H, W) or (B, C, F, H, W), or a list of such tensors.
             target_size: Target (frames, height, width) grid to align before recovery.
 
         Returns:
@@ -304,16 +311,19 @@ class Pi3GuidedTI2V(nn.Module):
             pi3_latent = pi3_latent.unsqueeze(0)
         if pi3_latent.dim() != 5:
             return None
+        target_size_tuple = tuple(target_size)
+        needs_resize = pi3_latent.shape[-3:] != target_size_tuple
         device_latent = pi3_latent.to(self.device)
-        if target_size is not None and device_latent.shape[2:] != tuple(target_size):
-            resized = F.interpolate(
+        resized = (
+            F.interpolate(
                 device_latent,
-                size=tuple(target_size),
+                size=target_size_tuple,
                 mode="trilinear",
                 align_corners=False,
             )
-        else:
-            resized = device_latent
+            if needs_resize
+            else device_latent
+        )
         recovered = self.pi3_recover_adapter(resized)
         return recovered.squeeze(0) if recovered.shape[0] == 1 else recovered
 
@@ -413,11 +423,7 @@ class Pi3GuidedTI2V(nn.Module):
             latents = pi3_out['latents']
             latent_volume = self._build_latent_volume(latents)
             pi3_target_size = latent_volume.shape[2:]
-            if hasattr(self.wan, "config"):
-                default_frame_num = getattr(self.wan.config, "frame_num", DEFAULT_FRAME_NUM)
-            else:
-                default_frame_num = DEFAULT_FRAME_NUM
-            frame_num = kwargs.get("frame_num", default_frame_num)
+            frame_num = self._get_frame_num(kwargs.get("frame_num"))
             # Match Wan VAE latent geometry: temporal downsample via stride[0] and spatial downsample via stride[1:].
             target_latent_size = (
                 (frame_num - 1) // self.wan.vae_stride[0] + 1,
