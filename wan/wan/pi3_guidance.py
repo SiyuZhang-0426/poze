@@ -345,13 +345,21 @@ class Pi3GuidedTI2V(nn.Module):
         image,
         gt_video: Optional[torch.Tensor] = None,
         gt_points: Optional[torch.Tensor] = None,
+        gt_latent: Optional[torch.Tensor] = None,
         video_weight: float = 1.0,
+        latent_weight: float = 1.0,
         point_weight: float = 1.0,
         **kwargs,
     ) -> Dict[str, Any]:
         outputs = self.generate_with_3d(prompt, image, enable_grad=True, **kwargs)
         losses = {}
         total_loss = torch.tensor(0.0, device=self.device)
+        if gt_latent is not None:
+            if outputs.get('rgb_latent') is None:
+                raise ValueError("Latent supervision requested but generation did not return rgb_latent.")
+            target_latent = gt_latent.to(outputs['rgb_latent'].device, dtype=outputs['rgb_latent'].dtype)
+            losses['latent'] = F.mse_loss(outputs['rgb_latent'], target_latent)
+            total_loss = total_loss + latent_weight * losses['latent']
         if gt_video is not None:
             losses['video'] = F.mse_loss(outputs['video'], gt_video)
             total_loss = total_loss + video_weight * losses['video']

@@ -105,3 +105,16 @@ python finetune.py \
   --save-every 20 \
   --save-dir finetune_outputs/forest_run
 ```
+
+To finetune directly on the preprocessed 4DNeX dataset (built via `4DNeX/build_wan_dataset.py`), point the script at the dataset root. Cached Wan VAE latents are used when available, while Pi3 remains frozen and Wan trains end-to-end:
+```bash
+python finetune.py \
+  --wan-ckpt-dir ./Wan2.2-TI2V-5B \
+  --dataset-root ./data/wan21 \
+  --dataset-use-latents true \
+  --batch-size 1 \
+  --steps 200 \
+  --latent-weight 1.0 \
+  --video-weight 0.5
+```
+`--prompt` and `--image` are not needed in dataset mode; prompts, first-frame images, and cached latents are read from the dataset directory.
