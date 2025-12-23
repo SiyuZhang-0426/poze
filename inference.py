@@ -64,8 +64,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--concat-method",
         default="channel",
-        choices=("channel", "frame", "width"),
-        help="How to fuse Pi3 latents with RGB latents: channel (default), frame, or width.",
+        choices=("channel", "frame", "width", "height"),
+        help="How to fuse Pi3 latents with RGB latents: channel (default), frame, width, or height.",
     )
     parser.add_argument(
         "--prompt",

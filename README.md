@@ -51,7 +51,7 @@ python inference.py \
 - `--offload-model`: optional; pass `true` or `false` (common boolean strings like `yes/no/1/0` also work) to control Wan CPU offloading. If omitted, it defaults to true.
 - `--wan-config`: choose another Wan config key (defaults to `ti2v-5B`).
 - `--use-pi3`: set false to disable Pi3 conditioning (runs plain Wan TI2V).
-- `--concat-method`: fuse Pi3 latents with RGB latents by channel (default), frame (time-wise concat), or width (side-by-side, doubling output width).
+- `--concat-method`: fuse Pi3 latents with RGB latents by channel (default), frame (time-wise concat), width (side-by-side, doubling output width), or height (stacked vertically, doubling output height).
 - `--pi3-checkpoint` / `--pi3-pretrained-id`: point to local Pi3 weights or a HF id.
 - `--output`: override the auto-named mp4 path under `outputs/`.
 
