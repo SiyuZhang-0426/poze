@@ -237,6 +237,14 @@ class Pi3GuidedTI2V(nn.Module):
     ) -> torch.Tensor:
         """
         Align Pi3 latent volume to Wan VAE latent geometry using interpolation + Conv3d projection.
+
+        Args:
+            pi3_latent: Pi3 decoder latents shaped (B, C, F, H, W) or (C, F, H, W).
+            target_latent: Reference Wan latent geometry as a tensor or (F, H, W) tuple.
+            concat_method: Fusion strategy used by Wan; impacts frame alignment.
+
+        Returns:
+            torch.Tensor: Pi3 latents projected into Wan VAE latent space.
         """
         if self.latent_adapter is None:
             return pi3_latent
@@ -273,6 +281,13 @@ class Pi3GuidedTI2V(nn.Module):
     ) -> Optional[torch.Tensor]:
         """
         Recover Pi3 decoder-space latents from diffusion outputs via interpolation + Conv3d.
+
+        Args:
+            pi3_latent: Diffusion output slice shaped (C, F, H, W) or (B, C, F, H, W), or a list.
+            target_size: Target (frames, height, width) grid to align before recovery.
+
+        Returns:
+            Optional[torch.Tensor]: Recovered Pi3 latent volume or None when inputs are invalid.
         """
         if self.pi3_recover_adapter is None:
             return None
@@ -398,7 +413,10 @@ class Pi3GuidedTI2V(nn.Module):
             latents = pi3_out['latents']
             latent_volume = self._build_latent_volume(latents)
             pi3_target_size = latent_volume.shape[2:]
-            default_frame_num = getattr(self.wan.config, "frame_num", DEFAULT_FRAME_NUM) if hasattr(self.wan, "config") else DEFAULT_FRAME_NUM
+            if hasattr(self.wan, "config"):
+                default_frame_num = getattr(self.wan.config, "frame_num", DEFAULT_FRAME_NUM)
+            else:
+                default_frame_num = DEFAULT_FRAME_NUM
             frame_num = kwargs.get("frame_num", default_frame_num)
             # Match Wan VAE latent geometry: temporal downsample via stride[0] and spatial downsample via stride[1:].
             target_latent_size = (
@@ -425,19 +443,20 @@ class Pi3GuidedTI2V(nn.Module):
             video = generated.get("video")
             rgb_latent = generated.get("rgb_latent")
             pi3_latent = generated.get("pi3_latent")
+            processed_pi3_latent = pi3_latent
             if pi3_latent is not None and pi3_target_size is not None:
                 recovered_pi3 = self.recover_pi3_latents(pi3_latent, pi3_target_size)
                 if recovered_pi3 is not None:
-                    pi3_latent = recovered_pi3
+                    processed_pi3_latent = recovered_pi3
         else:
             video = generated
             rgb_latent = None
-            pi3_latent = None
+            processed_pi3_latent = None
         # pi3_preds = self._decode_pi3_latent_sequence(pi3_latent)
         return {
             "video": video,
             "rgb_latent": rgb_latent,
-            "pi3_latent": pi3_latent,
+            "pi3_latent": processed_pi3_latent,
             # "pi3_preds": pi3_preds,
         }
 
