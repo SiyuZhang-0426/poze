@@ -1,5 +1,5 @@
 import math
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -229,7 +229,7 @@ class Pi3GuidedTI2V(nn.Module):
     def align_pi3_latent(
         self,
         pi3_latent: torch.Tensor,
-        target_latent: torch.Tensor,
+        target_latent: Union[torch.Tensor, Tuple[int, int, int]],
         concat_method: Optional[str] = None,
     ) -> torch.Tensor:
         """
@@ -240,12 +240,19 @@ class Pi3GuidedTI2V(nn.Module):
         if pi3_latent.dim() == 4:
             pi3_latent = pi3_latent.unsqueeze(0)
         # Wan expects latents without a batch dimension; keep only spatial/frame sizes.
-        target_size = target_latent.shape[1:] if target_latent.dim() == 4 else target_latent.shape[-3:]
+        if isinstance(target_latent, torch.Tensor):
+            target_size = target_latent.shape[-3:]
+            target_device = target_latent.device
+            target_dtype = target_latent.dtype
+        else:
+            target_size = tuple(target_latent)
+            target_device = self.device
+            target_dtype = pi3_latent.dtype
         concat_method = concat_method or getattr(self.wan, "concat_method", "channel")
         if concat_method == "frame":
             target_size = (pi3_latent.shape[2], target_size[-2], target_size[-1])
         aligned = F.interpolate(
-            pi3_latent.to(target_latent.device, target_latent.dtype),
+            pi3_latent.to(target_device, target_dtype),
             size=target_size,
             mode="trilinear",
             align_corners=False,
@@ -273,14 +280,16 @@ class Pi3GuidedTI2V(nn.Module):
             pi3_latent = pi3_latent.unsqueeze(0)
         if pi3_latent.dim() != 5:
             return None
-        resized = pi3_latent.to(self.device)
-        if target_size is not None and resized.shape[2:] != tuple(target_size):
+        device_latent = pi3_latent.to(self.device)
+        if target_size is not None and device_latent.shape[2:] != tuple(target_size):
             resized = F.interpolate(
-                resized,
+                device_latent,
                 size=tuple(target_size),
                 mode="trilinear",
                 align_corners=False,
             )
+        else:
+            resized = device_latent
         recovered = self.pi3_recover_adapter(resized)
         return recovered.squeeze(0) if recovered.shape[0] == 1 else recovered
 
@@ -373,7 +382,6 @@ class Pi3GuidedTI2V(nn.Module):
     def generate_with_3d(self, prompt: str, image, enable_grad: bool = False, **kwargs) -> Dict[str, Any]:
         imgs, pil_image = self._prepare_image_inputs(image)
         video_condition = None
-        cond_latent_ref = None
         pi3_target_size = None
         if self.use_pi3:
             with torch.no_grad():
@@ -381,11 +389,18 @@ class Pi3GuidedTI2V(nn.Module):
             latents = pi3_out['latents']
             latent_volume = self._build_latent_volume(latents)
             pi3_target_size = latent_volume.shape[2:]
-            with torch.no_grad():
-                cond_latent_ref = self.wan.vae.encode([pil_image])[0]
+            frame_num = kwargs.get(
+                "frame_num",
+                getattr(getattr(self.wan, "config", None), "frame_num", 81),
+            )
+            target_latent_size = (
+                (frame_num - 1) // self.wan.vae_stride[0] + 1,
+                math.ceil(latents['hw'][0] / self.wan.vae_stride[1]),
+                math.ceil(latents['hw'][1] / self.wan.vae_stride[2]),
+            )
             video_condition = self.align_pi3_latent(
                 latent_volume,
-                cond_latent_ref,
+                target_latent_size,
                 concat_method=self.wan.concat_method,
             )
         if enable_grad:
