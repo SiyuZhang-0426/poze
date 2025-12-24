@@ -33,7 +33,8 @@ from wan.utils.utils import save_video, str2bool  # noqa: E402
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run Pi3-guided Wan TI2V inference.")
+        description="Run Pi3-guided Wan TI2V inference."
+    )
     parser.add_argument(
         "--wan-ckpt-dir",
         required=True,
