@@ -115,7 +115,7 @@ def _parse_args() -> argparse.Namespace:
         "--save-pi3",
         type=Path,
         default=None,
-        help="Optional path to torch.save the Pi3 decode outputs (points/depth/rgb); also writes a .ply point cloud."
+        help="Optional path to save a Pi3 point cloud (.ply)."
     )
     return parser.parse_args()
 
@@ -190,8 +190,6 @@ def main():
         if pi3_out is None:
             logging.warning("Pi3 predictions unavailable; skipping save_pi3.")
         else:
-            torch.save(pi3_out, args.save_pi3)
-            logging.info("Saved Pi3 predictions to %s", args.save_pi3)
             points = pi3_out.get("points")
             conf = pi3_out.get("conf")
             ply_path = args.save_pi3
