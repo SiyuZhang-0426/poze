@@ -26,6 +26,7 @@ REPO_ROOT = _add_repo_to_path()
 
 import torch  # noqa: E402
 from PIL import Image  # noqa: E402
+from pi3.utils.basic import write_ply  # noqa: E402
 from wan import configs  # noqa: E402
 from wan.pi3_guidance import Pi3GuidedTI2V  # noqa: E402
 from wan.utils.utils import save_video, str2bool  # noqa: E402
@@ -111,7 +112,7 @@ def _parse_args() -> argparse.Namespace:
         "--save-pi3",
         type=Path,
         default=None,
-        help="Optional path to torch.save the Pi3 decode outputs (points/depth/rgb)."
+        help="Optional path to torch.save the Pi3 decode outputs (points/depth/rgb); also writes a .ply point cloud."
     )
     return parser.parse_args()
 
@@ -157,6 +158,7 @@ def main():
         frame_num=frame_num,
         offload_model=args.offload_model,
         enable_grad=False,
+        decode_pi3=bool(args.save_pi3),
     )
 
     logging.info("Saving video to %s", output_path)
@@ -169,6 +171,37 @@ def main():
         normalize=True,
         value_range=(-1, 1),
     )
+
+    if args.save_latents:
+        args.save_latents.parent.mkdir(parents=True, exist_ok=True)
+        latents_payload = {
+            "rgb_latent": outputs.get("rgb_latent"),
+            "pi3_latent": outputs.get("pi3_latent"),
+        }
+        torch.save(latents_payload, args.save_latents)
+        logging.info("Saved latents to %s", args.save_latents)
+
+    if args.save_pi3:
+        pi3_out = outputs.get("pi3")
+        args.save_pi3.parent.mkdir(parents=True, exist_ok=True)
+        if pi3_out is None:
+            logging.warning("Pi3 predictions unavailable; skipping save_pi3.")
+        else:
+            torch.save(pi3_out, args.save_pi3)
+            logging.info("Saved Pi3 predictions to %s", args.save_pi3)
+            points = pi3_out.get("points")
+            conf = pi3_out.get("conf")
+            ply_path = args.save_pi3 if args.save_pi3.suffix.lower() == ".ply" else args.save_pi3.with_suffix(".ply")
+            if points is None:
+                logging.warning("Pi3 predictions missing points; skipped PLY export.")
+            else:
+                points_to_save = points[0]
+                if conf is not None:
+                    conf_mask = conf[0, ..., 0] > 0.5
+                    if conf_mask.any():
+                        points_to_save = points_to_save[conf_mask]
+                write_ply(points_to_save, path=str(ply_path))
+                logging.info("Saved Pi3 point cloud to %s", ply_path)
 
     logging.info("Done.")
 
