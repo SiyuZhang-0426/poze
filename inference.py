@@ -203,10 +203,17 @@ def main():
                 points_to_save = points[0]
                 if conf is not None:
                     conf_map = conf[0].squeeze(-1)
-                    if conf_map.ndim >= 3:
+                    expected_mask_shape = points_to_save.shape[:-1]
+                    if conf_map.shape[: len(expected_mask_shape)] == expected_mask_shape:
                         conf_mask = conf_map > PI3_CONF_THRESHOLD
                         if conf_mask.any():
                             points_to_save = points_to_save[conf_mask]
+                    else:
+                        logging.warning(
+                            "Pi3 confidence shape %s does not match points shape %s; skipping confidence filtering.",
+                            tuple(conf_map.shape),
+                            tuple(expected_mask_shape),
+                        )
                 write_ply(points_to_save, path=str(ply_path))
                 logging.info("Saved Pi3 point cloud to %s", ply_path)
 

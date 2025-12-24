@@ -362,7 +362,8 @@ class Pi3GuidedTI2V(nn.Module):
             pi3_latent = pi3_latent[0]
         if not isinstance(pi3_latent, torch.Tensor):
             return None
-
+        if pi3_latent.dim() < 4:
+            return None
         if pi3_latent.dim() == 4:
             pi3_latent = pi3_latent.unsqueeze(0)
         resolved_target_size = target_size or self._last_pi3_target_size or pi3_latent.shape[-3:]
@@ -371,11 +372,12 @@ class Pi3GuidedTI2V(nn.Module):
         target_size = tuple(resolved_target_size)
 
         with torch.no_grad():
-            expected_channels = (
-                self.pi3_recover_adapter.out_channels
-                if self.pi3_recover_adapter is not None
-                else 2 * self.pi3.dec_embed_dim
-            )
+            if self.pi3_recover_adapter is not None:
+                expected_channels = self.pi3_recover_adapter.out_channels
+            elif self.pi3 is not None:
+                expected_channels = 2 * self.pi3.dec_embed_dim
+            else:
+                return None
             if pi3_latent.shape[1] != expected_channels:
                 recovered = self.recover_pi3_latents(pi3_latent, target_size)
                 if recovered is None:
@@ -513,7 +515,7 @@ class Pi3GuidedTI2V(nn.Module):
         point_weight: float = 1.0,
         **kwargs,
     ) -> Dict[str, Any]:
-        decode_pi3 = gt_points is not None
+        decode_pi3 = kwargs.pop("decode_pi3", gt_points is not None)
         outputs = self.generate_with_3d(
             prompt,
             image,
