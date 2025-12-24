@@ -32,6 +32,9 @@ from wan.pi3_guidance import Pi3GuidedTI2V  # noqa: E402
 from wan.utils.utils import save_video, str2bool  # noqa: E402
 
 
+PI3_CONF_THRESHOLD = 0.5
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run Pi3-guided Wan TI2V inference."
@@ -191,13 +194,15 @@ def main():
             logging.info("Saved Pi3 predictions to %s", args.save_pi3)
             points = pi3_out.get("points")
             conf = pi3_out.get("conf")
-            ply_path = args.save_pi3 if args.save_pi3.suffix.lower() == ".ply" else args.save_pi3.with_suffix(".ply")
+            ply_path = args.save_pi3
+            if ply_path.suffix.lower() != ".ply":
+                ply_path = ply_path.with_suffix(".ply")
             if points is None:
                 logging.warning("Pi3 predictions missing points; skipped PLY export.")
             else:
                 points_to_save = points[0]
                 if conf is not None:
-                    conf_mask = conf[0, ..., 0] > 0.5
+                    conf_mask = conf[0, ..., 0] > PI3_CONF_THRESHOLD
                     if conf_mask.any():
                         points_to_save = points_to_save[conf_mask]
                 write_ply(points_to_save, path=str(ply_path))

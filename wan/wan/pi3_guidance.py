@@ -366,7 +366,7 @@ class Pi3GuidedTI2V(nn.Module):
         if pi3_latent.dim() == 4:
             pi3_latent = pi3_latent.unsqueeze(0)
         target_size = target_size or self._last_pi3_target_size or pi3_latent.shape[-3:]
-        if target_size is None or len(tuple(target_size)) != 3:
+        if target_size is None or len(target_size) != 3:
             return None
         target_size = tuple(target_size)
 
