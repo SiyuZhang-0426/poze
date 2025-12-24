@@ -200,7 +200,8 @@ def main():
             if points is None:
                 logging.warning("Pi3 predictions missing points; skipped PLY export.")
             else:
-                points_to_save = points[0]
+                # Save the first batch element by default.
+                points_to_save = points[0] if points.dim() > 1 else points
                 if conf is not None:
                     conf_map = conf[0].squeeze(-1)
                     expected_mask_shape = points_to_save.shape[:-1]

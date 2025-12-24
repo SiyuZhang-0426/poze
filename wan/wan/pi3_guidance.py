@@ -367,7 +367,7 @@ class Pi3GuidedTI2V(nn.Module):
         if pi3_latent.dim() == 4:
             pi3_latent = pi3_latent.unsqueeze(0)
         resolved_target_size = target_size or self._last_pi3_target_size or pi3_latent.shape[-3:]
-        if resolved_target_size is None or len(resolved_target_size) != 3:
+        if len(resolved_target_size) != 3:
             return None
         target_size = tuple(resolved_target_size)
 
@@ -449,6 +449,7 @@ class Pi3GuidedTI2V(nn.Module):
         imgs, pil_image = self._prepare_image_inputs(image)
         video_condition = None
         pi3_target_size = None
+        # Reset per-call cache; used only to decode outputs from this generation.
         self._last_pi3_target_size = None
         if self.use_pi3:
             with torch.no_grad():
