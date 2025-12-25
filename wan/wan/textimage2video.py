@@ -229,7 +229,8 @@ class WanTI2V:
         """
         Align Pi3 latent volume to Wan VAE latent geometry using interpolation + Conv3d projection.
         """
-        if self.latent_adapter is None:
+        adapter = getattr(self, "latent_adapter", None)
+        if adapter is None:
             return pi3_latent
         if pi3_latent.dim() == 4:
             pi3_latent = pi3_latent.unsqueeze(0)
@@ -250,7 +251,7 @@ class WanTI2V:
             mode="trilinear",
             align_corners=False,
         )
-        projected = self.latent_adapter(aligned)
+        projected = adapter(aligned)
         return projected.squeeze(0)
 
     def _recover_pi3_latents(
@@ -261,7 +262,7 @@ class WanTI2V:
         """
         Recover Pi3 decoder-space latents from diffusion outputs via interpolation + Conv3d.
         """
-        adapter = self.pi3_recover_adapter
+        adapter = getattr(self, "pi3_recover_adapter", None)
         if adapter is None or pi3_latent is None or target_size is None:
             return pi3_latent
         processed_latent = pi3_latent
