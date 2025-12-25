@@ -197,7 +197,10 @@ class WanTI2V:
         if processed_latent.dim() != 5:
             return processed_latent
         target_size = tuple(target_size)
-        target_device = next(adapter.parameters()).device
+        try:
+            target_device = next(adapter.parameters()).device
+        except StopIteration:
+            target_device = processed_latent.device
         if processed_latent.device != target_device:
             processed_latent = processed_latent.to(target_device)
         needs_resize = processed_latent.shape[-3:] != target_size
