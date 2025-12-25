@@ -321,7 +321,7 @@ class Pi3GuidedTI2V(nn.Module):
         Returns:
             Optional[torch.Tensor]: Recovered Pi3 latent volume or None when inputs are invalid.
         """
-        if self.pi3_recover_adapter is None:
+        if getattr(self.wan, "pi3_recover_adapter", None) is None:
             return None
         if pi3_latent is None:
             return None
@@ -332,25 +332,8 @@ class Pi3GuidedTI2V(nn.Module):
                 return None
             # Downstream callers only support a single conditioned sample; use the first item.
             pi3_latent = pi3_latent[0]
-        if pi3_latent.dim() == 4:
-            pi3_latent = pi3_latent.unsqueeze(0)
-        if pi3_latent.dim() != 5:
-            return None
         target_size_tuple = tuple(target_size)
-        needs_resize = pi3_latent.shape[-3:] != target_size_tuple
-        device_latent = pi3_latent.to(self.device)
-        resized = (
-            F.interpolate(
-                device_latent,
-                size=target_size_tuple,
-                mode="trilinear",
-                align_corners=False,
-            )
-            if needs_resize
-            else device_latent
-        )
-        recovered = self.pi3_recover_adapter(resized)
-        return recovered.squeeze(0) if recovered.shape[0] == 1 else recovered
+        return self.wan._recover_pi3_latents(pi3_latent, target_size_tuple)
 
     def _decode_pi3_latent_sequence(
         self,

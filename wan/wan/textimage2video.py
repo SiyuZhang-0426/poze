@@ -195,12 +195,16 @@ class WanTI2V:
         if processed_latent.dim() == 4:
             processed_latent = processed_latent.unsqueeze(0)
         if processed_latent.dim() != 5:
-            return processed_latent
+            return None
         target_size = tuple(target_size)
-        try:
-            target_device = next(adapter.parameters()).device
-        except StopIteration:
-            target_device = processed_latent.device
+        cached_device = getattr(adapter, "_cached_device", None)
+        if cached_device is None:
+            try:
+                cached_device = next(adapter.parameters()).device
+            except StopIteration:
+                cached_device = processed_latent.device
+            adapter._cached_device = cached_device
+        target_device = cached_device
         if processed_latent.device != target_device:
             processed_latent = processed_latent.to(target_device)
         needs_resize = processed_latent.shape[-3:] != target_size
