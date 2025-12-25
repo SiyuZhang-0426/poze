@@ -1,4 +1,5 @@
 import math
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
@@ -7,6 +8,7 @@ import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 
 from pi3.models.pi3 import Pi3
+from pi3.utils.basic import load_images_as_tensor
 from .textimage2video import WanTI2V
 
 
@@ -185,9 +187,26 @@ class Pi3GuidedTI2V(nn.Module):
         return padded.reshape(*leading_shape, c, target_h, target_w)
 
     def _prepare_image_inputs(self, image) -> Tuple[torch.Tensor, Any]:
+        if isinstance(image, (str, Path)):
+            tensor = load_images_as_tensor(str(image), interval=1)
+            if tensor.numel() == 0:
+                raise ValueError(
+                    f"No image loaded from {image}; ensure the path points to a readable .png/.jpg/.jpeg file or directory."
+                )
+            image = tensor
         if not self.use_pi3:
-            pil = image if hasattr(image, "mode") and image.mode == "RGB" else image.convert("RGB")
-            tensor = TF.to_tensor(pil).unsqueeze(0).unsqueeze(0)
+            if isinstance(image, torch.Tensor):
+                base = image
+                if base.dim() == 4:
+                    base = base[0]
+                if base.dim() != 3:
+                    raise ValueError(f"Expected image tensor with shape (C, H, W) or (N, C, H, W); got {tuple(image.shape)}")
+                base_cpu = base if base.device.type == "cpu" else base.cpu()
+                pil = TF.to_pil_image(base_cpu)
+                tensor = base.unsqueeze(0).unsqueeze(0)
+            else:
+                pil = image if hasattr(image, "mode") and image.mode == "RGB" else image.convert("RGB")
+                tensor = TF.to_tensor(pil).unsqueeze(0).unsqueeze(0)
             return tensor.to(self.device), pil
         if isinstance(image, torch.Tensor):
             tensor = image

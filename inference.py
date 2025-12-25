@@ -154,10 +154,9 @@ def main():
     )
 
     logging.info("Running generation...")
-    pil_image = Image.open(args.image).convert("RGB")
     outputs = guide.generate_with_3d(
         prompt=args.prompt,
-        image=pil_image,
+        image=args.image,
         frame_num=frame_num,
         offload_model=args.offload_model,
         enable_grad=False,
