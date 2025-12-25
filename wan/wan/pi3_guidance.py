@@ -244,6 +244,7 @@ class Pi3GuidedTI2V(nn.Module):
             patch_w,
             tokens.size(-1),
         )
+        # shape: [B, C, F, H, W]
         return tokens.permute(0, 4, 1, 2, 3).contiguous()
 
     def align_pi3_latent(
@@ -453,9 +454,9 @@ class Pi3GuidedTI2V(nn.Module):
         self._last_pi3_target_size = None
         if self.use_pi3:
             with torch.no_grad():
-                pi3_out = self.pi3(imgs, return_latents=True)
-            latents = pi3_out['latents']
+                latents = self.pi3(imgs)
             latent_volume = self._build_latent_volume(latents)
+            # shape: [B, C, F, H, W] -> [F, H, W]
             pi3_target_size = latent_volume.shape[2:]
             self._last_pi3_target_size = pi3_target_size
             frame_num = self._get_frame_num(kwargs.get("frame_num"))
@@ -492,11 +493,11 @@ class Pi3GuidedTI2V(nn.Module):
             rgb_latent = None
             processed_pi3_latent = None
         pi3_preds = None
-        if decode_pi3 and processed_pi3_latent is not None:
-            pi3_preds = self._decode_pi3_latent_sequence(
-                processed_pi3_latent,
-                target_size=pi3_target_size,
-            )
+        # if decode_pi3 and processed_pi3_latent is not None:
+        #     pi3_preds = self._decode_pi3_latent_sequence(
+        #         processed_pi3_latent,
+        #         target_size=pi3_target_size,
+        #     )
         return {
             "video": video,
             "rgb_latent": rgb_latent,

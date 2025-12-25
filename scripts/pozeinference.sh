@@ -14,5 +14,6 @@ python inference.py \
     --device cuda \
     --use-pi3 True \
     --concat-method width \
-    --output ./outputs/snowball.mp4
+    --output ./outputs/snowball.mp4 \
+    --save-pi3 ./outputs/snowball.ply
 "

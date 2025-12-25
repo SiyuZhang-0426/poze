@@ -4,3 +4,4 @@ pi3_ckpt/
 Wan2.2-TI2V-5B/
 zsydata/
 outputs/
+slurm-*.out

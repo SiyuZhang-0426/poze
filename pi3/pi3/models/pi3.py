@@ -208,7 +208,7 @@ class Pi3(nn.Module, PyTorchModelHubMixin):
             N,
         )
 
-    def forward(self, imgs, return_latents: bool = False, detach_latents: bool = True):
+    def forward(self, imgs):
         imgs = (imgs - self.image_mean) / self.image_std
 
         B, N, _, H, W = imgs.shape
@@ -223,26 +223,12 @@ class Pi3(nn.Module, PyTorchModelHubMixin):
 
         hidden, pos = self.decode(hidden, N, H, W)
 
-        point_hidden = self.point_decoder(hidden, xpos=pos)
-        conf_hidden = self.conf_decoder(hidden, xpos=pos)
-        camera_hidden = self.camera_decoder(hidden, xpos=pos)
-
-        latents = None
-        if return_latents:
-            def maybe_detach(x):
-                return x.detach() if detach_latents else x
-            latents = dict(
-                decoder_hidden=maybe_detach(hidden),
-                pos=maybe_detach(pos),
-                point_tokens=maybe_detach(point_hidden),
-                conf_tokens=maybe_detach(conf_hidden),
-                camera_tokens=maybe_detach(camera_hidden),
-                hw=(H, W),
-                frames=N,
-                batch=B,
-            )
-
-        outputs = self._decode_tokens(point_hidden, conf_hidden, camera_hidden, H, W, B, N)
-        if latents is not None:
-            outputs['latents'] = latents
-        return outputs
+        print("Shape of pi3 hidden before stitch layers: ", hidden.shape)
+        print("Shape of pi3 position embedding before stitch layers: ", pos.shape)
+        return dict(
+            decoder_hidden=hidden,
+            pos=pos,
+            hw=(H, W),
+            frames=N,
+            batch=B,
+        )
