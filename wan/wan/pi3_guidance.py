@@ -102,6 +102,7 @@ class Pi3GuidedTI2V(nn.Module):
                 for i in range(shared_recover):
                     self.pi3_recover_adapter.weight[i, i, 0, 0, 0] = 1.0
             self.wan.latent_adapter = self.latent_adapter
+            self.wan.pi3_recover_adapter = self.pi3_recover_adapter
         else:
             self.latent_adapter = None
             self.pi3_recover_adapter = None
@@ -320,7 +321,7 @@ class Pi3GuidedTI2V(nn.Module):
         Returns:
             Optional[torch.Tensor]: Recovered Pi3 latent volume or None when inputs are invalid.
         """
-        if self.pi3_recover_adapter is None:
+        if getattr(self.wan, "pi3_recover_adapter", None) is None:
             return None
         if pi3_latent is None:
             return None
@@ -331,25 +332,8 @@ class Pi3GuidedTI2V(nn.Module):
                 return None
             # Downstream callers only support a single conditioned sample; use the first item.
             pi3_latent = pi3_latent[0]
-        if pi3_latent.dim() == 4:
-            pi3_latent = pi3_latent.unsqueeze(0)
-        if pi3_latent.dim() != 5:
-            return None
         target_size_tuple = tuple(target_size)
-        needs_resize = pi3_latent.shape[-3:] != target_size_tuple
-        device_latent = pi3_latent.to(self.device)
-        resized = (
-            F.interpolate(
-                device_latent,
-                size=target_size_tuple,
-                mode="trilinear",
-                align_corners=False,
-            )
-            if needs_resize
-            else device_latent
-        )
-        recovered = self.pi3_recover_adapter(resized)
-        return recovered.squeeze(0) if recovered.shape[0] == 1 else recovered
+        return self.wan._recover_pi3_latents(pi3_latent, target_size_tuple)
 
     def _decode_pi3_latent_sequence(
         self,
@@ -473,11 +457,7 @@ class Pi3GuidedTI2V(nn.Module):
             pi3_target_size = latent_volume.shape[2:]
             print("Shape of pi3_target_size: ", pi3_target_size)
             self._last_pi3_target_size = pi3_target_size
-            video_condition = self.align_pi3_latent(
-                latent_volume,
-                pi3_target_size,
-                concat_method=self.wan.concat_method,
-            )
+            video_condition = latent_volume
         if enable_grad:
             kwargs.setdefault("offload_model", False)
         generated = self.wan.generate(
@@ -492,11 +472,7 @@ class Pi3GuidedTI2V(nn.Module):
             video = generated.get("video")
             rgb_latent = generated.get("rgb_latent")
             pi3_latent = generated.get("pi3_latent")
-            if pi3_latent is not None and pi3_target_size is not None:
-                recovered_pi3 = self.recover_pi3_latents(pi3_latent, pi3_target_size)
-                processed_pi3_latent = recovered_pi3 if recovered_pi3 is not None else pi3_latent
-            else:
-                processed_pi3_latent = pi3_latent
+            processed_pi3_latent = pi3_latent
         else:
             video = generated
             rgb_latent = None

@@ -86,6 +86,7 @@ class WanTI2V:
         self.param_dtype = config.param_dtype
         self.trainable = trainable
         self.latent_adapter = None
+        self.pi3_recover_adapter = None
         self.use_pi3_condition = use_pi3_condition
         valid_concat = {"channel", "frame", "width", "height"}
         if concat_method not in valid_concat:
@@ -178,6 +179,47 @@ class WanTI2V:
             if bias is not None:
                 new_patch.bias.copy_(bias)
         self.model.patch_embedding = new_patch
+
+    def _recover_pi3_latents(
+        self,
+        pi3_latent: torch.Tensor,
+        target_size: tuple[int, int, int] | None,
+    ) -> torch.Tensor | None:
+        """
+        Recover Pi3 decoder-space latents from diffusion outputs via interpolation + Conv3d.
+        """
+        adapter = self.pi3_recover_adapter
+        if adapter is None or pi3_latent is None or target_size is None:
+            return pi3_latent
+        processed_latent = pi3_latent
+        if processed_latent.dim() == 4:
+            processed_latent = processed_latent.unsqueeze(0)
+        if processed_latent.dim() != 5:
+            return None
+        target_size = tuple(target_size)
+        cached_device = getattr(adapter, "_cached_device", None)
+        if cached_device is None:
+            try:
+                cached_device = next(adapter.parameters()).device
+            except StopIteration:
+                cached_device = processed_latent.device
+            adapter._cached_device = cached_device
+        target_device = cached_device
+        if processed_latent.device != target_device:
+            processed_latent = processed_latent.to(target_device)
+        needs_resize = processed_latent.shape[-3:] != target_size
+        resized = (
+            F.interpolate(
+                processed_latent,
+                size=target_size,
+                mode="trilinear",
+                align_corners=False,
+            )
+            if needs_resize
+            else processed_latent
+        )
+        recovered = adapter(resized)
+        return recovered.squeeze(0) if recovered.shape[0] == 1 else recovered
 
     def _configure_model(self, model, use_sp, dit_fsdp, shard_fn,
                          convert_model_dtype, trainable=False):
@@ -625,6 +667,7 @@ class WanTI2V:
 
         fused_latent = cond_latent
         pi3_condition_adapted = None
+        pi3_condition_target_size = None
         channel_count = cond_latent.shape[0]
         condition_channels = 0
         latent_frames = (frame_count - 1) // self.vae_stride[0] + 1
@@ -640,6 +683,7 @@ class WanTI2V:
             if cond.dim() == 5:
                 cond = cond[0]
             cond = cond.to(device=self.device, dtype=cond_latent.dtype)
+            pi3_condition_target_size = cond.shape[1:]
             if cond.shape[1:] != cond_latent.shape[1:]:
                 # Preserve temporal length for frame-wise fusion; only match spatial dims.
                 target_size = cond_latent.shape[1:] if concat_method != "frame" else (
@@ -839,6 +883,10 @@ class WanTI2V:
                     pi3_latent = None
                     rgb_latent = final_latent
                     output_latent = final_latent
+                if pi3_latent is not None:
+                    pi3_latent = self._recover_pi3_latents(
+                        pi3_latent, pi3_condition_target_size
+                    )
                 x0 = [output_latent]
             else:
                 x0 = [latent]
