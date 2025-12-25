@@ -191,25 +191,25 @@ class WanTI2V:
         adapter = self.pi3_recover_adapter
         if adapter is None or pi3_latent is None or target_size is None:
             return pi3_latent
-        latent = pi3_latent
-        if latent.dim() == 4:
-            latent = latent.unsqueeze(0)
-        if latent.dim() != 5:
-            return latent
+        processed_latent = pi3_latent
+        if processed_latent.dim() == 4:
+            processed_latent = processed_latent.unsqueeze(0)
+        if processed_latent.dim() != 5:
+            return processed_latent
         target_size = tuple(target_size)
-        target_device = adapter.weight.device
-        if latent.device != target_device:
-            latent = latent.to(target_device)
-        needs_resize = latent.shape[-3:] != target_size
+        target_device = next(adapter.parameters()).device
+        if processed_latent.device != target_device:
+            processed_latent = processed_latent.to(target_device)
+        needs_resize = processed_latent.shape[-3:] != target_size
         resized = (
             F.interpolate(
-                latent,
+                processed_latent,
                 size=target_size,
                 mode="trilinear",
                 align_corners=False,
             )
             if needs_resize
-            else latent
+            else processed_latent
         )
         recovered = adapter(resized)
         return recovered.squeeze(0) if recovered.shape[0] == 1 else recovered
