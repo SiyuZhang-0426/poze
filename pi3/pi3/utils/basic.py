@@ -2,11 +2,13 @@ import os
 import os.path as osp
 import math
 import cv2
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 import torch
 from torchvision import transforms
 from plyfile import PlyData, PlyElement
 import numpy as np
+
+IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg')
 
 def load_images_as_tensor(path='data/truck', interval=1, PIXEL_LIMIT=255000):
     """
@@ -18,13 +20,20 @@ def load_images_as_tensor(path='data/truck', interval=1, PIXEL_LIMIT=255000):
     # --- 1. Load image paths or video frames ---
     if osp.isdir(path):
         print(f"Loading images from directory: {path}")
-        filenames = sorted([x for x in os.listdir(path) if x.lower().endswith(('.png', '.jpg', '.jpeg'))])
-        for i in range(0, len(filenames), interval):
-            img_path = osp.join(path, filenames[i])
+        filenames = sorted([x for x in os.listdir(path) if x.lower().endswith(IMAGE_EXTENSIONS)])
+        for idx in range(0, len(filenames), interval):
+            fname = filenames[idx]
+            img_path = osp.join(path, fname)
             try:
                 sources.append(Image.open(img_path).convert('RGB'))
-            except Exception as e:
-                print(f"Could not load image {filenames[i]}: {e}")
+            except (OSError, UnidentifiedImageError) as e:
+                print(f"Could not load image {fname}: {e}")
+    elif osp.isfile(path) and path.lower().endswith(IMAGE_EXTENSIONS):
+        print(f"Loading single image: {path}")
+        try:
+            sources.append(Image.open(path).convert('RGB'))
+        except (OSError, UnidentifiedImageError) as e:
+            print(f"Could not load image {path}: {e}")
     elif path.lower().endswith('.mp4'):
         print(f"Loading frames from video: {path}")
         cap = cv2.VideoCapture(path)
@@ -39,7 +48,7 @@ def load_images_as_tensor(path='data/truck', interval=1, PIXEL_LIMIT=255000):
             frame_idx += 1
         cap.release()
     else:
-        raise ValueError(f"Unsupported path. Must be a directory or a .mp4 file: {path}")
+        raise ValueError(f"Unsupported path. Must be a directory, a single image file ({', '.join(IMAGE_EXTENSIONS)}), or a .mp4 file: {path}")
 
     if not sources:
         print("No images found or loaded.")
