@@ -459,8 +459,15 @@ class Pi3GuidedTI2V(nn.Module):
             # Cache the Pi3 latent geometry for potential decoding.
             pi3_target_size = latent_volume.shape[2:]
             self._last_pi3_target_size = pi3_target_size
-            # Let Wan align and project the Pi3 volume to its encoded RGB latent shape.
-            video_condition = latent_volume
+            frame_num = self._get_frame_num(kwargs.get("frame_num"))
+            target_latent_size = self._compute_target_latent_size(
+                latents['hw'], frame_num
+            )
+            video_condition = self.align_pi3_latent(
+                latent_volume,
+                target_latent_size,
+                concat_method=self.wan.concat_method,
+            )
         if enable_grad:
             kwargs.setdefault("offload_model", False)
         generated = self.wan.generate(
