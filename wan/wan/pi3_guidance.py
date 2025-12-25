@@ -240,6 +240,9 @@ class Pi3GuidedTI2V(nn.Module):
         patch_h = latents['hw'][0] // self.pi3.patch_size
         patch_w = latents['hw'][1] // self.pi3.patch_size
         tokens = latents['decoder_hidden'][:, self.pi3.patch_start_idx:, :]
+
+        print("Shape of tokens before _build_latent_volume: ", tokens.shape)
+
         tokens = tokens.view(
             latents['batch'],
             latents['frames'],
@@ -248,7 +251,11 @@ class Pi3GuidedTI2V(nn.Module):
             tokens.size(-1),
         )
         # shape: [B, C, F, H, W]
-        return tokens.permute(0, 4, 1, 2, 3).contiguous()
+        tokens = tokens.permute(0, 4, 1, 2, 3).contiguous()
+
+        print("Shape of tokens after _build_latent_volume: ", tokens.shape)
+
+        return tokens
 
     def align_pi3_latent(
         self,
@@ -293,6 +300,9 @@ class Pi3GuidedTI2V(nn.Module):
             align_corners=False,
         )
         projected = self.latent_adapter(aligned)
+
+        print("Shape of pi3 latent after interpolation and conv3d: ", projected.shape)
+
         return projected.squeeze(0)
 
     def recover_pi3_latents(
@@ -461,6 +471,7 @@ class Pi3GuidedTI2V(nn.Module):
             latent_volume = self._build_latent_volume(latents)
             # Cache the Pi3 latent geometry for potential decoding.
             pi3_target_size = latent_volume.shape[2:]
+            print("Shape of pi3_target_size: ", pi3_target_size)
             self._last_pi3_target_size = pi3_target_size
             video_condition = self.align_pi3_latent(
                 latent_volume,

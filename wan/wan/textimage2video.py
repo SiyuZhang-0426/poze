@@ -619,6 +619,10 @@ class WanTI2V:
 
         z = self.vae.encode([img])
         cond_latent = z[0]
+
+        print("Shape of rgb latent: ", cond_latent.shape)
+        print("Shape of video condition: ", video_condition.shape)
+
         fused_latent = cond_latent
         pi3_condition_adapted = None
         channel_count = cond_latent.shape[0]
