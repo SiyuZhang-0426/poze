@@ -7,5 +7,6 @@ source ~/.bashrc && \
 conda activate poze && \
 cd /mnt/petrelfs/zhangsiyu/4dgen/poze && \
 python ./pi3/example.py \
-    --data-path ./zsydata
+    --ckpt ./pi3_ckpt/model.safetensors \
+    --data_path ./zsydata
 "

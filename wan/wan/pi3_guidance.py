@@ -104,22 +104,6 @@ class Pi3GuidedTI2V(nn.Module):
             self.latent_adapter = None
             self.pi3_recover_adapter = None
 
-    def _get_frame_num(self, override: Optional[int]) -> int:
-        if override is not None:
-            return override
-        if hasattr(self.wan, "config"):
-            return getattr(self.wan.config, "frame_num", DEFAULT_FRAME_NUM)
-        return DEFAULT_FRAME_NUM
-
-    def _compute_target_latent_size(
-        self, latents_hw: Tuple[int, int], frame_num: int
-    ) -> Tuple[int, int, int]:
-        return (
-            (frame_num - 1) // self.wan.vae_stride[0] + 1,
-            math.ceil(latents_hw[0] / self.wan.vae_stride[1]),
-            math.ceil(latents_hw[1] / self.wan.vae_stride[2]),
-        )
-
     def _align_patch_embedding_for_pi3(self) -> None:
         """
         If the Wan patch embedding expects concatenated RGB + Pi3 channels, seed the
