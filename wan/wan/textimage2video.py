@@ -188,7 +188,7 @@ class WanTI2V:
         """
         Recover Pi3 decoder-space latents from diffusion outputs via interpolation + Conv3d.
         """
-        adapter = getattr(self, "pi3_recover_adapter", None)
+        adapter = self.pi3_recover_adapter
         if adapter is None or pi3_latent is None or target_size is None:
             return pi3_latent
         if pi3_latent.dim() == 4:
@@ -196,16 +196,18 @@ class WanTI2V:
         if pi3_latent.dim() != 5:
             return pi3_latent
         target_size = tuple(target_size)
-        device_latent = pi3_latent.to(adapter.weight.device)
+        if pi3_latent.device != adapter.weight.device:
+            pi3_latent = pi3_latent.to(adapter.weight.device)
+        needs_resize = pi3_latent.shape[-3:] != target_size
         resized = (
             F.interpolate(
-                device_latent,
+                pi3_latent,
                 size=target_size,
                 mode="trilinear",
                 align_corners=False,
             )
-            if device_latent.shape[-3:] != target_size
-            else device_latent
+            if needs_resize
+            else pi3_latent
         )
         recovered = adapter(resized)
         return recovered.squeeze(0) if recovered.shape[0] == 1 else recovered
