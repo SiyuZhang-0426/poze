@@ -69,43 +69,7 @@ class Pi3GuidedTI2V(nn.Module):
             # Pi3 decoder latents concatenate the last two blocks, giving 2 * dec_embed_dim channels.
             # The adapter expects that full volume as input before projecting into the VAE latent space.
             pi3_channel_dim = 2 * self.pi3.dec_embed_dim
-            self.latent_adapter = nn.Conv3d(
-                in_channels=pi3_channel_dim,
-                out_channels=self.wan.vae.model.z_dim,
-                kernel_size=1,
-            ).to(self.device)
-            # Recover Pi3 latents (from diffusion output) back into decoder token space for per-frame decoding.
-            self.pi3_recover_adapter = nn.Conv3d(
-                in_channels=self.wan.vae.model.z_dim,
-                out_channels=pi3_channel_dim,
-                kernel_size=1,
-            ).to(self.device)
-            with torch.no_grad():
-                # Seed with a channel-copy identity so image latents stay intact while Pi3 features are blended in.
-                self.latent_adapter.weight.zero_()
-                if self.latent_adapter.bias is not None:
-                    self.latent_adapter.bias.zero_()
-                shared = min(
-                    self.latent_adapter.in_channels,
-                    self.latent_adapter.out_channels,
-                )
-                for i in range(shared):
-                    self.latent_adapter.weight[i, i, 0, 0, 0] = 1.0
-                # Mirror the identity-style init for the recovery adapter so round-tripping is stable before finetuning.
-                self.pi3_recover_adapter.weight.zero_()
-                if self.pi3_recover_adapter.bias is not None:
-                    self.pi3_recover_adapter.bias.zero_()
-                shared_recover = min(
-                    self.pi3_recover_adapter.in_channels,
-                    self.pi3_recover_adapter.out_channels,
-                )
-                for i in range(shared_recover):
-                    self.pi3_recover_adapter.weight[i, i, 0, 0, 0] = 1.0
-            self.wan.latent_adapter = self.latent_adapter
-            self.wan.pi3_recover_adapter = self.pi3_recover_adapter
-        else:
-            self.latent_adapter = None
-            self.pi3_recover_adapter = None
+            self.wan.configure_pi3_adapters(pi3_channel_dim)
 
     def _align_patch_embedding_for_pi3(self) -> None:
         """
@@ -258,83 +222,6 @@ class Pi3GuidedTI2V(nn.Module):
 
         return tokens
 
-    def align_pi3_latent(
-        self,
-        pi3_latent: torch.Tensor,
-        target_latent: Union[torch.Tensor, Tuple[int, int, int]],
-        concat_method: Optional[str] = None,
-    ) -> torch.Tensor:
-        """
-        Align Pi3 latent volume to Wan VAE latent geometry using interpolation + Conv3d projection.
-
-        Args:
-            pi3_latent: Pi3 decoder latents shaped (B, C, F, H, W) or (C, F, H, W).
-            target_latent: Reference Wan latent geometry as a tensor or (F, H, W) tuple.
-            concat_method: Fusion strategy used by Wan; impacts frame alignment.
-
-        Returns:
-            torch.Tensor: Pi3 latents projected into Wan VAE latent space.
-        """
-        if self.latent_adapter is None:
-            return pi3_latent
-        if pi3_latent.dim() == 4:
-            pi3_latent = pi3_latent.unsqueeze(0)
-        # Wan expects latents without a batch dimension; keep only spatial/frame sizes.
-        if isinstance(target_latent, torch.Tensor):
-            target_size = target_latent.shape[-3:]
-            target_device = target_latent.device
-            target_dtype = target_latent.dtype
-        else:
-            target_size = tuple(target_latent)
-            if len(target_size) != 3:
-                raise ValueError(f"target_latent must describe (frames, height, width); got {target_size}")
-            target_device = self.device
-            target_dtype = pi3_latent.dtype
-        # Fallback to channel concatenation when Wan is not configured for Pi3 conditioning.
-        concat_method = concat_method or getattr(self.wan, "concat_method", "channel")
-        if concat_method == "frame":
-            target_size = (pi3_latent.shape[2], target_size[-2], target_size[-1])
-        aligned = F.interpolate(
-            pi3_latent.to(target_device, target_dtype),
-            size=target_size,
-            mode="trilinear",
-            align_corners=False,
-        )
-        projected = self.latent_adapter(aligned)
-
-        print("Shape of pi3 latent after interpolation and conv3d: ", projected.shape)
-
-        return projected.squeeze(0)
-
-    def recover_pi3_latents(
-        self,
-        pi3_latent: Union[torch.Tensor, List[torch.Tensor]],
-        target_size: Optional[Tuple[int, int, int]],
-    ) -> Optional[torch.Tensor]:
-        """
-        Recover Pi3 decoder-space latents from diffusion outputs via interpolation + Conv3d.
-
-        Args:
-            pi3_latent: Diffusion output slice shaped (C, F, H, W) or (B, C, F, H, W), or a list of such tensors.
-            target_size: Target (frames, height, width) grid to align before recovery.
-
-        Returns:
-            Optional[torch.Tensor]: Recovered Pi3 latent volume or None when inputs are invalid.
-        """
-        if getattr(self.wan, "pi3_recover_adapter", None) is None:
-            return None
-        if pi3_latent is None:
-            return None
-        if target_size is None:
-            return None
-        if isinstance(pi3_latent, list):
-            if len(pi3_latent) == 0:
-                return None
-            # Downstream callers only support a single conditioned sample; use the first item.
-            pi3_latent = pi3_latent[0]
-        target_size_tuple = tuple(target_size)
-        return self.wan._recover_pi3_latents(pi3_latent, target_size_tuple)
-
     def _decode_pi3_latent_sequence(
         self,
         pi3_latent: torch.Tensor,
@@ -370,14 +257,14 @@ class Pi3GuidedTI2V(nn.Module):
         target_size = tuple(resolved_target_size)
 
         with torch.no_grad():
-            if self.pi3_recover_adapter is not None:
-                expected_channels = self.pi3_recover_adapter.out_channels
+            if self.wan.pi3_recover_adapter is not None:
+                expected_channels = self.wan.pi3_recover_adapter.out_channels
             elif self.pi3 is not None:
                 expected_channels = 2 * self.pi3.dec_embed_dim
             else:
                 return None
             if pi3_latent.shape[1] != expected_channels:
-                recovered = self.recover_pi3_latents(pi3_latent, target_size)
+                recovered = self.wan.recover_pi3_latents(pi3_latent, target_size)
                 if recovered is None:
                     return None
             else:

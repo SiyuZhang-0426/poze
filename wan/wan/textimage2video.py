@@ -180,6 +180,79 @@ class WanTI2V:
                 new_patch.bias.copy_(bias)
         self.model.patch_embedding = new_patch
 
+    def configure_pi3_adapters(self, pi3_channel_dim: int) -> None:
+        """
+        Initialize Pi3 latent projection and recovery adapters on the WanTI2V instance.
+
+        Args:
+            pi3_channel_dim: Channel dimension of the Pi3 decoder latent volume (typically 2 * dec_embed_dim).
+        """
+        latent_adapter = torch.nn.Conv3d(
+            in_channels=pi3_channel_dim,
+            out_channels=self.vae.model.z_dim,
+            kernel_size=1,
+            device=self.device,
+        )
+        pi3_recover_adapter = torch.nn.Conv3d(
+            in_channels=self.vae.model.z_dim,
+            out_channels=pi3_channel_dim,
+            kernel_size=1,
+            device=self.device,
+        )
+        with torch.no_grad():
+            latent_adapter.weight.zero_()
+            if latent_adapter.bias is not None:
+                latent_adapter.bias.zero_()
+            shared = min(latent_adapter.in_channels, latent_adapter.out_channels)
+            for i in range(shared):
+                latent_adapter.weight[i, i, 0, 0, 0] = 1.0
+
+            pi3_recover_adapter.weight.zero_()
+            if pi3_recover_adapter.bias is not None:
+                pi3_recover_adapter.bias.zero_()
+            shared_recover = min(
+                pi3_recover_adapter.in_channels,
+                pi3_recover_adapter.out_channels,
+            )
+            for i in range(shared_recover):
+                pi3_recover_adapter.weight[i, i, 0, 0, 0] = 1.0
+
+        self.latent_adapter = latent_adapter
+        self.pi3_recover_adapter = pi3_recover_adapter
+
+    def align_pi3_latent(
+        self,
+        pi3_latent: torch.Tensor,
+        target_latent: torch.Tensor | tuple[int, int, int],
+        concat_method: str | None = None,
+    ) -> torch.Tensor:
+        """
+        Align Pi3 latent volume to Wan VAE latent geometry using interpolation + Conv3d projection.
+        """
+        if self.latent_adapter is None:
+            return pi3_latent
+        if pi3_latent.dim() == 4:
+            pi3_latent = pi3_latent.unsqueeze(0)
+        if isinstance(target_latent, torch.Tensor):
+            target_size = target_latent.shape[-3:]
+            target_device = target_latent.device
+            target_dtype = target_latent.dtype
+        else:
+            target_size = tuple(target_latent)
+            target_device = self.device
+            target_dtype = pi3_latent.dtype
+        concat_method = concat_method or getattr(self, "concat_method", "channel")
+        if concat_method == "frame":
+            target_size = (pi3_latent.shape[2], target_size[-2], target_size[-1])
+        aligned = F.interpolate(
+            pi3_latent.to(target_device, target_dtype),
+            size=target_size,
+            mode="trilinear",
+            align_corners=False,
+        )
+        projected = self.latent_adapter(aligned)
+        return projected.squeeze(0)
+
     def _recover_pi3_latents(
         self,
         pi3_latent: torch.Tensor,
@@ -220,6 +293,22 @@ class WanTI2V:
         )
         recovered = adapter(resized)
         return recovered.squeeze(0) if recovered.shape[0] == 1 else recovered
+
+    def recover_pi3_latents(
+        self,
+        pi3_latent: torch.Tensor | list[torch.Tensor] | None,
+        target_size: tuple[int, int, int] | None,
+    ) -> torch.Tensor | None:
+        """
+        Public wrapper to recover Pi3 latents using the configured recovery adapter.
+        """
+        if pi3_latent is None or target_size is None:
+            return None
+        if isinstance(pi3_latent, list):
+            if len(pi3_latent) == 0:
+                return None
+            pi3_latent = pi3_latent[0]
+        return self._recover_pi3_latents(pi3_latent, tuple(target_size))
 
     def _configure_model(self, model, use_sp, dit_fsdp, shard_fn,
                          convert_model_dtype, trainable=False):
