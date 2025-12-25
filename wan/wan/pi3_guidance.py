@@ -456,19 +456,11 @@ class Pi3GuidedTI2V(nn.Module):
             with torch.no_grad():
                 latents = self.pi3(imgs)
             latent_volume = self._build_latent_volume(latents)
-            # shape: [B, C, F, H, W] -> [F, H, W]
+            # Cache the Pi3 latent geometry for potential decoding.
             pi3_target_size = latent_volume.shape[2:]
             self._last_pi3_target_size = pi3_target_size
-            frame_num = self._get_frame_num(kwargs.get("frame_num"))
-            # Match Wan VAE latent geometry: temporal downsample via stride[0] and spatial downsample via stride[1:].
-            target_latent_size = self._compute_target_latent_size(
-                latents['hw'], frame_num
-            )
-            video_condition = self.align_pi3_latent(
-                latent_volume,
-                target_latent_size,
-                concat_method=self.wan.concat_method,
-            )
+            # Let Wan align and project the Pi3 volume to its encoded RGB latent shape.
+            video_condition = latent_volume
         if enable_grad:
             kwargs.setdefault("offload_model", False)
         generated = self.wan.generate(
