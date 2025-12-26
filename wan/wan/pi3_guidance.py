@@ -281,6 +281,7 @@ class Pi3GuidedTI2V(nn.Module):
         if self.use_pi3:
             with torch.no_grad():
                 latents = self.pi3(imgs)
+            latents = latents.copy()
             latents["patch_size"] = self.pi3.patch_size
             latents["patch_start_idx"] = self.pi3.patch_start_idx
             patch_h = latents['hw'][0] // self.pi3.patch_size

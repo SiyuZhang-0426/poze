@@ -240,9 +240,13 @@ class WanTI2V:
         patch_size = latents.get("patch_size", self.pi3_patch_size)
         patch_start_idx = latents.get("patch_start_idx", self.pi3_patch_start_idx)
         if patch_size is None:
-            raise ValueError("patch_size must be provided to build Pi3 latent volume.")
+            raise ValueError(
+                "patch_size must be provided to build Pi3 latent volume (set via configure_pi3_adapters or latents['patch_size'])."
+            )
         if patch_start_idx is None:
-            raise ValueError("patch_start_idx must be provided to build Pi3 latent volume.")
+            raise ValueError(
+                "patch_start_idx must be provided to build Pi3 latent volume (set via configure_pi3_adapters or latents['patch_start_idx'])."
+            )
 
         patch_h = latents['hw'][0] // patch_size
         patch_w = latents['hw'][1] // patch_size
@@ -320,12 +324,15 @@ class WanTI2V:
         cond = cond.to(device=self.device, dtype=cond_latent.dtype)
 
         pi3_condition_target_size = (latent_frames, cond_latent.shape[2], cond_latent.shape[3])
-        interpolated = torch.nn.functional.interpolate(
-            cond,
-            size=pi3_condition_target_size,
-            mode="trilinear",
-            align_corners=False,
-        )
+        if cond.shape[-3:] == pi3_condition_target_size:
+            interpolated = cond
+        else:
+            interpolated = torch.nn.functional.interpolate(
+                cond,
+                size=pi3_condition_target_size,
+                mode="trilinear",
+                align_corners=False,
+            )
         conv_output = (
             self.latent_adapter(interpolated)
             if self.latent_adapter is not None
@@ -333,7 +340,7 @@ class WanTI2V:
         )
         conv_output = conv_output.contiguous()
 
-        # rearrange to (B, seq, C)
+        # rearrange to (B, seq, C) for conditioning tokens appended to text context
         b, c, f, h, w = conv_output.shape
         extra_context = conv_output.permute(0, 2, 3, 4, 1).reshape(b, f * h * w, c)
 
