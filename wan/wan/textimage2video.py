@@ -87,6 +87,8 @@ class WanTI2V:
         self.trainable = trainable
         self.latent_adapter = None
         self.pi3_recover_adapter = None
+        self.pi3_patch_size = None
+        self.pi3_patch_start_idx = None
         self.use_pi3_condition = use_pi3_condition
         valid_concat = {"channel", "frame", "width", "height"}
         if concat_method not in valid_concat:
@@ -180,12 +182,19 @@ class WanTI2V:
                 new_patch.bias.copy_(bias)
         self.model.patch_embedding = new_patch
 
-    def configure_pi3_adapters(self, pi3_channel_dim: int) -> None:
+    def configure_pi3_adapters(
+        self,
+        pi3_channel_dim: int,
+        patch_size: int | None = None,
+        patch_start_idx: int | None = None,
+    ) -> None:
         """
         Initialize Pi3 latent projection and recovery adapters on the WanTI2V instance.
 
         Args:
             pi3_channel_dim: Channel dimension of the Pi3 decoder latent volume (typically 2 * dec_embed_dim).
+            patch_size: Pi3 patch size for reshaping decoder tokens.
+            patch_start_idx: Index where spatial tokens start in the decoder output.
         """
         latent_adapter = torch.nn.Conv3d(
             in_channels=pi3_channel_dim,
@@ -219,6 +228,39 @@ class WanTI2V:
 
         self.latent_adapter = latent_adapter
         self.pi3_recover_adapter = pi3_recover_adapter
+        if patch_size is not None:
+            self.pi3_patch_size = patch_size
+        if patch_start_idx is not None:
+            self.pi3_patch_start_idx = patch_start_idx
+
+    def _build_latent_volume(self, latents):
+        """
+        Reshape Pi3 decoder hidden tokens into a spatial volume aligned with the patch grid.
+        """
+        patch_size = latents.get("patch_size", self.pi3_patch_size)
+        patch_start_idx = latents.get("patch_start_idx", self.pi3_patch_start_idx)
+        if patch_size is None:
+            raise ValueError(
+                "patch_size must be provided to build Pi3 latent volume (set via configure_pi3_adapters or latents['patch_size'])."
+            )
+        if patch_start_idx is None:
+            raise ValueError(
+                "patch_start_idx must be provided to build Pi3 latent volume (set via configure_pi3_adapters or latents['patch_start_idx'])."
+            )
+
+        patch_h = latents['hw'][0] // patch_size
+        patch_w = latents['hw'][1] // patch_size
+        tokens = latents['decoder_hidden'][:, patch_start_idx:, :]
+        tokens = tokens.view(
+            latents['batch'],
+            latents['frames'],
+            patch_h,
+            patch_w,
+            tokens.size(-1),
+        )
+        # shape: [B, C, F, H, W]
+        tokens = tokens.permute(0, 4, 1, 2, 3).contiguous()
+        return tokens
 
     def align_pi3_latent(
         self,
@@ -253,6 +295,61 @@ class WanTI2V:
         )
         projected = adapter(aligned)
         return projected.squeeze(0)
+
+    def _prepare_pi3_condition(
+        self,
+        video_condition,
+        cond_latent: torch.Tensor,
+        latent_frames: int,
+        concat_method: str,
+    ):
+        if video_condition is None or not self.use_pi3_condition:
+            return None, None, None, 0
+
+        cond = video_condition
+        if isinstance(cond, dict):
+            cond = self._build_latent_volume(cond)
+        if cond is None:
+            return None, None, None, 0
+        if isinstance(cond, list):
+            if len(cond) == 0:
+                return None, None, None, 0
+            cond = cond[0]
+        if cond.dim() == 4:
+            cond = cond.unsqueeze(0)
+        if cond.dim() != 5:
+            raise ValueError(
+                "video_condition must have shape (C, F, H, W) or (B, C, F, H, W)."
+            )
+        cond = cond.to(device=self.device, dtype=cond_latent.dtype)
+
+        pi3_condition_target_size = (latent_frames, cond_latent.shape[2], cond_latent.shape[3])
+        if cond.shape[-3:] == pi3_condition_target_size:
+            interpolated = cond
+        else:
+            interpolated = torch.nn.functional.interpolate(
+                cond,
+                size=pi3_condition_target_size,
+                mode="trilinear",
+                align_corners=False,
+            )
+        conv_output = (
+            self.latent_adapter(interpolated)
+            if self.latent_adapter is not None
+            else interpolated
+        )
+        conv_output = conv_output.contiguous()
+
+        # rearrange to (B, seq, C) for conditioning tokens appended to text context
+        b, c, f, h, w = conv_output.shape
+        extra_context = conv_output.permute(0, 2, 3, 4, 1).reshape(b, f * h * w, c)
+
+        return (
+            conv_output.squeeze(0),
+            extra_context,
+            pi3_condition_target_size,
+            c,
+        )
 
     def _recover_pi3_latents(
         self,
@@ -316,6 +413,32 @@ class WanTI2V:
                 return None
             pi3_latent = pi3_latent[0]
         return self._recover_pi3_latents(pi3_latent, tuple(target_size))
+
+    def preprocess_pi3_latent(
+        self,
+        pi3_latent: torch.Tensor | list[torch.Tensor] | None,
+        target_size: tuple[int, int, int] | None,
+    ) -> torch.Tensor | None:
+        """
+        Normalize Pi3 latent inputs to (B, C, F, H, W) and apply recovery adapter when available.
+        """
+        if pi3_latent is None:
+            return None
+        if isinstance(pi3_latent, list):
+            if len(pi3_latent) == 0:
+                return None
+            pi3_latent = pi3_latent[0]
+        if not isinstance(pi3_latent, torch.Tensor):
+            return None
+        if pi3_latent.dim() == 4:
+            pi3_latent = pi3_latent.unsqueeze(0)
+        resolved_target = target_size or pi3_latent.shape[-3:]
+        processed = self.recover_pi3_latents(pi3_latent, resolved_target)
+        if processed is None:
+            return None
+        if processed.dim() == 4:
+            processed = processed.unsqueeze(0)
+        return processed
 
     def _configure_model(self, model, use_sp, dit_fsdp, shard_fn,
                          convert_model_dtype, trainable=False):
@@ -758,68 +881,48 @@ class WanTI2V:
         z = self.vae.encode([img])
         cond_latent = z[0]
 
-        print("Shape of rgb latent: ", cond_latent.shape)
-        print("Shape of video condition: ", video_condition.shape)
-
         fused_latent = cond_latent
         pi3_condition_adapted = None
         pi3_condition_target_size = None
+        pi3_extra_context = None
         channel_count = cond_latent.shape[0]
         condition_channels = 0
         latent_frames = (frame_count - 1) // self.vae_stride[0] + 1
         concat_method = getattr(self, "concat_method", "channel")
-        if video_condition is not None:
-            cond = video_condition
-            if isinstance(cond, list):
-                cond = cond[0]
-            if cond.dim() not in (4, 5):
-                raise ValueError(
-                    "video_condition must have shape (C, F, H, W) or (B, C, F, H, W)."
-                )
-            if cond.dim() == 5:
-                cond = cond[0]
-            cond = cond.to(device=self.device, dtype=cond_latent.dtype)
-            pi3_condition_target_size = cond.shape[1:]
-            if cond.shape[1:] != cond_latent.shape[1:]:
-                # Preserve temporal length for frame-wise fusion; only match spatial dims.
-                target_size = cond_latent.shape[1:] if concat_method != "frame" else (
-                    cond.shape[1],
-                    cond_latent.shape[2],
-                    cond_latent.shape[3],
-                )
-                cond = torch.nn.functional.interpolate(
-                    cond.unsqueeze(0),
-                    size=target_size,
-                    mode="trilinear",
-                    align_corners=False,
-                ).squeeze(0)
-
-                print("Shape of video condition after interpolation: ", cond.shape)
-
-            cond_c, cond_f, cond_h, cond_w = cond.shape
-            latent_c, latent_f, latent_h, latent_w = cond_latent.shape
-            can_project = (
-                self.latent_adapter is not None
-                and cond_c == self.latent_adapter.in_channels
-                and (cond_f, cond_h, cond_w) == (latent_f, latent_h, latent_w)
+        if video_condition is not None and self.use_pi3_condition:
+            (
+                pi3_condition_adapted,
+                pi3_extra_context,
+                pi3_condition_target_size,
+                condition_channels,
+            ) = self._prepare_pi3_condition(
+                video_condition,
+                cond_latent,
+                latent_frames,
+                concat_method,
             )
-            if can_project:
-                cond = self.latent_adapter(cond.unsqueeze(0)).squeeze(0)
-            pi3_condition_adapted = cond
 
-            print("Shape of pi3 condition adapted: ", pi3_condition_adapted.shape)
+        if extra_context is not None:
+            extra_context = extra_context.to(self.device)
+        if pi3_extra_context is not None:
+            pi3_extra_context = pi3_extra_context.to(self.device)
+            if extra_context is None:
+                extra_context = pi3_extra_context
+            else:
+                extra_context = torch.cat([extra_context, pi3_extra_context], dim=1)
 
+        if pi3_condition_adapted is not None:
             if concat_method == "channel":
-                fused_latent = torch.cat([cond_latent, cond], dim=0)
+                fused_latent = torch.cat([cond_latent, pi3_condition_adapted], dim=0)
             elif concat_method == "frame":
-                fused_latent = torch.cat([cond_latent, cond], dim=1)
+                fused_latent = torch.cat([cond_latent, pi3_condition_adapted], dim=1)
             elif concat_method == "width":
-                fused_latent = torch.cat([cond_latent, cond], dim=3)
+                fused_latent = torch.cat([cond_latent, pi3_condition_adapted], dim=3)
             elif concat_method == "height":
-                fused_latent = torch.cat([cond_latent, cond], dim=2)
+                fused_latent = torch.cat([cond_latent, pi3_condition_adapted], dim=2)
             else:
                 raise ValueError(f"Unsupported concat_method: {concat_method}")
-            condition_channels = cond.shape[0]
+            condition_channels = pi3_condition_adapted.shape[0]
 
         latent_h = fused_latent.shape[2]
         latent_w = fused_latent.shape[3]
