@@ -250,7 +250,7 @@ class WanTI2V:
 
         patch_h = latents['hw'][0] // patch_size
         patch_w = latents['hw'][1] // patch_size
-        tokens = latents['decoder_hidden'][:, patch_start_idx:, :]
+        tokens = latents['hidden'][:, patch_start_idx:, :]
         tokens = tokens.view(
             latents['batch'],
             latents['frames'],
@@ -262,45 +262,10 @@ class WanTI2V:
         tokens = tokens.permute(0, 4, 1, 2, 3).contiguous()
         return tokens
 
-    def align_pi3_latent(
-        self,
-        pi3_latent: torch.Tensor,
-        target_latent: torch.Tensor | tuple[int, int, int],
-        concat_method: str | None = None,
-    ) -> torch.Tensor:
-        """
-        Align Pi3 latent volume to Wan VAE latent geometry using interpolation + Conv3d projection.
-        """
-        adapter = getattr(self, "latent_adapter", None)
-        if adapter is None:
-            return pi3_latent
-        if pi3_latent.dim() == 4:
-            pi3_latent = pi3_latent.unsqueeze(0)
-        if isinstance(target_latent, torch.Tensor):
-            target_size = target_latent.shape[-3:]
-            target_device = target_latent.device
-            target_dtype = target_latent.dtype
-        else:
-            target_size = tuple(target_latent)
-            target_device = self.device
-            target_dtype = pi3_latent.dtype
-        concat_method = concat_method or getattr(self, "concat_method", "channel")
-        if concat_method == "frame":
-            target_size = (pi3_latent.shape[2], target_size[-2], target_size[-1])
-        aligned = F.interpolate(
-            pi3_latent.to(target_device, target_dtype),
-            size=target_size,
-            mode="trilinear",
-            align_corners=False,
-        )
-        projected = adapter(aligned)
-        return projected.squeeze(0)
-
     def _prepare_pi3_condition(
         self,
         video_condition,
         cond_latent: torch.Tensor,
-        latent_frames: int,
         concat_method: str,
     ):
         if video_condition is None or not self.use_pi3_condition:
@@ -323,7 +288,9 @@ class WanTI2V:
             )
         cond = cond.to(device=self.device, dtype=cond_latent.dtype)
 
-        pi3_condition_target_size = (latent_frames, cond_latent.shape[2], cond_latent.shape[3])
+        print("Shape of video condition after _build_latent_volume", cond.shape)
+
+        pi3_condition_target_size = (cond_latent.shape[1], cond_latent.shape[2], cond_latent.shape[3])
         if cond.shape[-3:] == pi3_condition_target_size:
             interpolated = cond
         else:
@@ -333,6 +300,9 @@ class WanTI2V:
                 mode="trilinear",
                 align_corners=False,
             )
+
+        print("Shape of interpolated video condition", interpolated.shape)
+
         conv_output = (
             self.latent_adapter(interpolated)
             if self.latent_adapter is not None
@@ -340,34 +310,29 @@ class WanTI2V:
         )
         conv_output = conv_output.contiguous()
 
-        # rearrange to (B, seq, C) for conditioning tokens appended to text context
-        b, c, f, h, w = conv_output.shape
-        extra_context = conv_output.permute(0, 2, 3, 4, 1).reshape(b, f * h * w, c)
+        print("Shape of conv output", conv_output.shape)
 
         return (
             conv_output.squeeze(0),
-            extra_context,
-            pi3_condition_target_size,
-            c,
+            conv_output.shape[1],  # C
         )
 
     def _recover_pi3_latents(
         self,
         pi3_latent: torch.Tensor,
-        target_size: tuple[int, int, int] | None,
+        target_size: tuple[int, int, int],
     ) -> torch.Tensor | None:
         """
         Recover Pi3 decoder-space latents from diffusion outputs via interpolation + Conv3d.
         """
         adapter = getattr(self, "pi3_recover_adapter", None)
-        if adapter is None or pi3_latent is None or target_size is None:
+        if adapter is None or pi3_latent is None:
             return pi3_latent
         processed_latent = pi3_latent
         if processed_latent.dim() == 4:
             processed_latent = processed_latent.unsqueeze(0)
         if processed_latent.dim() != 5:
             return None
-        target_size = tuple(target_size)
         cached_device = getattr(adapter, "_cached_device", None)
         if cached_device is None:
             try:
@@ -401,44 +366,19 @@ class WanTI2V:
     def recover_pi3_latents(
         self,
         pi3_latent: torch.Tensor | list[torch.Tensor] | None,
-        target_size: tuple[int, int, int] | None,
+        target_size: tuple[int, int, int],
     ) -> torch.Tensor | None:
         """
         Public wrapper to recover Pi3 latents using the configured recovery adapter.
         """
-        if pi3_latent is None or target_size is None:
-            return None
-        if isinstance(pi3_latent, list):
-            if len(pi3_latent) == 0:
-                return None
-            pi3_latent = pi3_latent[0]
-        return self._recover_pi3_latents(pi3_latent, tuple(target_size))
-
-    def preprocess_pi3_latent(
-        self,
-        pi3_latent: torch.Tensor | list[torch.Tensor] | None,
-        target_size: tuple[int, int, int] | None,
-    ) -> torch.Tensor | None:
-        """
-        Normalize Pi3 latent inputs to (B, C, F, H, W) and apply recovery adapter when available.
-        """
         if pi3_latent is None:
             return None
+        print("Shape of pi3 latent before recovery", pi3_latent.shape)
         if isinstance(pi3_latent, list):
             if len(pi3_latent) == 0:
                 return None
             pi3_latent = pi3_latent[0]
-        if not isinstance(pi3_latent, torch.Tensor):
-            return None
-        if pi3_latent.dim() == 4:
-            pi3_latent = pi3_latent.unsqueeze(0)
-        resolved_target = target_size or pi3_latent.shape[-3:]
-        processed = self.recover_pi3_latents(pi3_latent, resolved_target)
-        if processed is None:
-            return None
-        if processed.dim() == 4:
-            processed = processed.unsqueeze(0)
-        return processed
+        return self._recover_pi3_latents(pi3_latent, target_size)
 
     def _configure_model(self, model, use_sp, dit_fsdp, shard_fn,
                          convert_model_dtype, trainable=False):
@@ -880,11 +820,10 @@ class WanTI2V:
 
         z = self.vae.encode([img])
         cond_latent = z[0]
+        print("Shape of rgb latent", cond_latent.shape)
 
         fused_latent = cond_latent
         pi3_condition_adapted = None
-        pi3_condition_target_size = None
-        pi3_extra_context = None
         channel_count = cond_latent.shape[0]
         condition_channels = 0
         latent_frames = (frame_count - 1) // self.vae_stride[0] + 1
@@ -892,24 +831,13 @@ class WanTI2V:
         if video_condition is not None and self.use_pi3_condition:
             (
                 pi3_condition_adapted,
-                pi3_extra_context,
-                pi3_condition_target_size,
                 condition_channels,
             ) = self._prepare_pi3_condition(
                 video_condition,
                 cond_latent,
-                latent_frames,
                 concat_method,
             )
-
-        if extra_context is not None:
-            extra_context = extra_context.to(self.device)
-        if pi3_extra_context is not None:
-            pi3_extra_context = pi3_extra_context.to(self.device)
-            if extra_context is None:
-                extra_context = pi3_extra_context
-            else:
-                extra_context = torch.cat([extra_context, pi3_extra_context], dim=1)
+        print("Shape of pi3 condition adapted", pi3_condition_adapted.shape)
 
         if pi3_condition_adapted is not None:
             if concat_method == "channel":
@@ -1088,10 +1016,7 @@ class WanTI2V:
                     pi3_latent = None
                     rgb_latent = final_latent
                     output_latent = final_latent
-                if pi3_latent is not None:
-                    pi3_latent = self._recover_pi3_latents(
-                        pi3_latent, pi3_condition_target_size
-                    )
+
                 x0 = [output_latent]
             else:
                 x0 = [latent]
@@ -1103,6 +1028,13 @@ class WanTI2V:
 
             if self.rank == 0:
                 videos = self.vae.decode(x0)
+                if pi3_latent is not None:
+                    pi3_decoded = self.vae.decode([pi3_latent])
+                    print("Shape of pi3 decoded", pi3_decoded.shape)
+                    pi3_decoded = self.recover_pi3_latents(
+                        pi3_decoded, video_condition["hidden"].shape[1:]
+                    )
+                    print("Shape of pi3 decoded after recovery", pi3_decoded.shape)
 
         output_video = videos[0] if self.rank == 0 else None
         output_pi3_latent = pi3_latent if self.rank == 0 else None

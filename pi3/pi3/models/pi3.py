@@ -170,7 +170,11 @@ class Pi3(nn.Module, PyTorchModelHubMixin):
 
         return torch.cat([final_output[0], final_output[1]], dim=-1), pos.reshape(B*N, hw, -1)
     
-    def _decode_tokens(self, point_hidden, conf_hidden, camera_hidden, H, W, B, N):
+    def _decode_tokens(self, hidden, pos, H, W, B, N):
+        point_hidden = self.point_decoder(hidden, xpos=pos)
+        conf_hidden = self.conf_decoder(hidden, xpos=pos)
+        camera_hidden = self.camera_decoder(hidden, xpos=pos)
+        
         with torch.amp.autocast(device_type='cuda', enabled=False):
             point_hidden = point_hidden.float()
             ret = self.point_head([point_hidden[:, self.patch_start_idx:]], (H, W)).reshape(B, N, H, W, -1)
@@ -225,8 +229,9 @@ class Pi3(nn.Module, PyTorchModelHubMixin):
 
         print("Shape of pi3 hidden before stitch layers: ", hidden.shape)
         print("Shape of pi3 position embedding before stitch layers: ", pos.shape)
+
         return dict(
-            decoder_hidden=hidden,
+            hidden=hidden,
             pos=pos,
             hw=(H, W),
             frames=N,

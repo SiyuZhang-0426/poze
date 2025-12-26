@@ -36,7 +36,7 @@ class Pi3GuidedTI2V(nn.Module):
         super().__init__()
         self.use_pi3 = use_pi3
         self.device = torch.device(device)
-        self._last_pi3_target_size: Optional[Tuple[int, int, int]] = None
+        self._pi3_shape: Optional[Tuple[int, int, int]] = None
         if self.use_pi3:
             if pi3_checkpoint is None:
                 self.pi3 = Pi3.from_pretrained(pi3_pretrained_id).to(self.device)
@@ -74,55 +74,6 @@ class Pi3GuidedTI2V(nn.Module):
                 patch_size=self.pi3.patch_size,
                 patch_start_idx=self.pi3.patch_start_idx,
             )
-
-    def _align_patch_embedding_for_pi3(self) -> None:
-        """
-        If the Wan patch embedding expects concatenated RGB + Pi3 channels, seed the
-        Pi3 portion with the pretrained RGB weights to avoid random initialization.
-        """
-        patch_embedding = getattr(self.wan.model, "patch_embedding", None)
-        if patch_embedding is None:
-            # Some alternative model wrappers may replace or omit the patch embedding entirely.
-            return
-
-        base_channels = self.wan.vae.model.z_dim
-        # Patch embedding expects RGB latents plus Pi3 latents; the adapter produces the same channel count as RGB.
-        expected_channels = base_channels * 2
-        weight = getattr(patch_embedding, "weight", None)
-        if weight is None or weight.dim() != 5:
-            return
-
-        if patch_embedding.in_channels not in (base_channels, expected_channels):
-            return
-
-        if patch_embedding.in_channels == expected_channels:
-            with torch.no_grad():
-                rgb_weights = weight[:, :base_channels].clone()
-                weight[:, base_channels:expected_channels] = rgb_weights
-            return
-
-        if patch_embedding.in_channels == base_channels:
-            bias = patch_embedding.bias
-            new_patch = nn.Conv3d(
-                in_channels=expected_channels,
-                out_channels=patch_embedding.out_channels,
-                kernel_size=patch_embedding.kernel_size,
-                stride=patch_embedding.stride,
-                padding=patch_embedding.padding,
-                dilation=patch_embedding.dilation,
-                groups=patch_embedding.groups,
-                bias=bias is not None,
-                device=weight.device,
-                dtype=weight.dtype,
-            )
-            with torch.no_grad():
-                new_patch.weight.zero_()
-                rgb_weights = weight.clone()
-                new_patch.weight[:, :base_channels] = rgb_weights
-                new_patch.weight[:, base_channels:expected_channels] = rgb_weights
-                if bias is not None:
-                    new_patch.bias.copy_(bias)
-            self.wan.model.patch_embedding = new_patch
 
     def _ensure_divisible_size(self, image):
         """
@@ -198,8 +149,7 @@ class Pi3GuidedTI2V(nn.Module):
 
     def _decode_pi3_latent_sequence(
         self,
-        pi3_latent: torch.Tensor,
-        target_size: Optional[Tuple[int, int, int]] = None,
+        pi3_latent: torch.Tensor | None,
     ) -> Optional[Dict[str, Any]]:
         """
         Recover dynamic Pi3 latents (returned by diffusion) back to Pi3 head inputs and decode them per frame.
@@ -213,9 +163,8 @@ class Pi3GuidedTI2V(nn.Module):
         """
         if not self.use_pi3 or self.pi3 is None:
             return None
-        resolved_target_size = target_size or self._last_pi3_target_size
         with torch.no_grad():
-            recovered = self.wan.preprocess_pi3_latent(pi3_latent, resolved_target_size)
+            recovered = pi3_latent
             if recovered is None:
                 return None
             if recovered.dim() == 4:
@@ -246,48 +195,30 @@ class Pi3GuidedTI2V(nn.Module):
             )
             pos = torch.cat([pos_special, pos], dim=1)
 
-            point_tokens = self.pi3.point_decoder(decoder_hidden, xpos=pos)
-            conf_tokens = self.pi3.conf_decoder(decoder_hidden, xpos=pos)
-            camera_tokens = self.pi3.camera_decoder(decoder_hidden, xpos=pos)
-
             H_pix = h * self.pi3.patch_size
             W_pix = w * self.pi3.patch_size
             decoded = self.pi3._decode_tokens(
-                point_tokens,
-                conf_tokens,
-                camera_tokens,
+                decoder_hidden,
+                pos,
                 H_pix,
                 W_pix,
                 b,
                 f,
-            )
-            decoded['latents'] = dict(
-                decoder_hidden=decoder_hidden,
-                point_tokens=point_tokens,
-                conf_tokens=conf_tokens,
-                camera_tokens=camera_tokens,
-                hw=(H_pix, W_pix),
-                frames=f,
-                batch=b,
             )
             return decoded
 
     def generate_with_3d(self, prompt: str, image, enable_grad: bool = False, decode_pi3: bool = False, **kwargs) -> Dict[str, Any]:
         imgs, pil_image = self._prepare_image_inputs(image)
         video_condition = None
-        pi3_target_size = None
         # Reset per-call cache; used only to decode outputs from this generation.
-        self._last_pi3_target_size = None
         if self.use_pi3:
             with torch.no_grad():
                 latents = self.pi3(imgs)
             latents = latents.copy()
             latents["patch_size"] = self.pi3.patch_size
             latents["patch_start_idx"] = self.pi3.patch_start_idx
-            patch_h = latents['hw'][0] // self.pi3.patch_size
-            patch_w = latents['hw'][1] // self.pi3.patch_size
-            pi3_target_size = (latents['frames'], patch_h, patch_w)
-            self._last_pi3_target_size = pi3_target_size
+            self._pi3_shape = latents["hidden"].shape
+
             video_condition = latents
         if enable_grad:
             kwargs.setdefault("offload_model", False)
@@ -303,22 +234,21 @@ class Pi3GuidedTI2V(nn.Module):
             video = generated.get("video")
             rgb_latent = generated.get("rgb_latent")
             pi3_latent = generated.get("pi3_latent")
-            processed_pi3_latent = pi3_latent
         else:
             video = generated
             rgb_latent = None
-            processed_pi3_latent = None
+            pi3_latent = None
         pi3_preds = None
-        # if decode_pi3 and processed_pi3_latent is not None:
-        #     pi3_preds = self._decode_pi3_latent_sequence(
-        #         processed_pi3_latent,
-        #         target_size=pi3_target_size,
-        #     )
+        if decode_pi3 and pi3_latent is not None:
+
+            print("Shape of pi3 latents before decode", pi3_latent.shape)
+
+            pi3_preds = self._decode_pi3_latent_sequence(pi3_latent)
         return {
             "video": video,
             "rgb_latent": rgb_latent,
-            "pi3_latent": processed_pi3_latent,
-            "pi3": pi3_preds,
+            "pi3_latent": pi3_latent,
+            "pi3_preds": pi3_preds,
         }
 
     def training_step(
@@ -355,7 +285,7 @@ class Pi3GuidedTI2V(nn.Module):
         if gt_points is not None:
             if not self.use_pi3:
                 raise ValueError("Point supervision training requires Pi3 conditioning to be enabled. Set use_pi3=True to enable this feature.")
-            losses['points'] = F.l1_loss(outputs['pi3']['points'], gt_points)
+            losses['points'] = F.l1_loss(outputs['pi3_preds']['points'], gt_points)
             total_loss = total_loss + point_weight * losses['points']
         outputs['loss'] = total_loss
         outputs['losses'] = losses
