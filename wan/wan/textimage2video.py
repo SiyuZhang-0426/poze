@@ -292,7 +292,13 @@ class WanTI2V:
             if needs_resize
             else processed_latent
         )
+
+        print("Shape of recovered pi3 latents after interpolation", resized.shape)
+
         recovered = adapter(resized)
+
+        print("Shape of recovered pi3 latents after projection", recovered.shape)
+
         return recovered.squeeze(0) if recovered.shape[0] == 1 else recovered
 
     def recover_pi3_latents(
@@ -787,6 +793,9 @@ class WanTI2V:
                     mode="trilinear",
                     align_corners=False,
                 ).squeeze(0)
+
+                print("Shape of video condition after interpolation: ", cond.shape)
+
             cond_c, cond_f, cond_h, cond_w = cond.shape
             latent_c, latent_f, latent_h, latent_w = cond_latent.shape
             can_project = (
@@ -797,6 +806,9 @@ class WanTI2V:
             if can_project:
                 cond = self.latent_adapter(cond.unsqueeze(0)).squeeze(0)
             pi3_condition_adapted = cond
+
+            print("Shape of pi3 condition adapted: ", pi3_condition_adapted.shape)
+
             if concat_method == "channel":
                 fused_latent = torch.cat([cond_latent, cond], dim=0)
             elif concat_method == "frame":
