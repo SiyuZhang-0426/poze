@@ -69,7 +69,11 @@ class Pi3GuidedTI2V(nn.Module):
             # Pi3 decoder latents concatenate the last two blocks, giving 2 * dec_embed_dim channels.
             # The adapter expects that full volume as input before projecting into the VAE latent space.
             pi3_channel_dim = 2 * self.pi3.dec_embed_dim
-            self.wan.configure_pi3_adapters(pi3_channel_dim)
+            self.wan.configure_pi3_adapters(
+                pi3_channel_dim,
+                patch_size=self.pi3.patch_size,
+                patch_start_idx=self.pi3.patch_start_idx,
+            )
 
     def _align_patch_embedding_for_pi3(self) -> None:
         """
@@ -192,36 +196,6 @@ class Pi3GuidedTI2V(nn.Module):
             tensor = TF.to_tensor(pil).unsqueeze(0).unsqueeze(0)
         return tensor.to(self.device), pil
 
-    def _build_latent_volume(self, latents: Dict[str, Any]) -> torch.Tensor:
-        """
-        Reshape Pi3 decoder hidden tokens into a spatial volume aligned with the patch grid.
-
-        Args:
-            latents: Pi3 latent dictionary containing 'decoder_hidden', 'hw', 'batch', and 'frames'.
-
-        Returns:
-            torch.Tensor: A tensor shaped (B, C, F, H, W) representing per-frame spatial latents.
-        """
-        patch_h = latents['hw'][0] // self.pi3.patch_size
-        patch_w = latents['hw'][1] // self.pi3.patch_size
-        tokens = latents['decoder_hidden'][:, self.pi3.patch_start_idx:, :]
-
-        print("Shape of tokens before _build_latent_volume: ", tokens.shape)
-
-        tokens = tokens.view(
-            latents['batch'],
-            latents['frames'],
-            patch_h,
-            patch_w,
-            tokens.size(-1),
-        )
-        # shape: [B, C, F, H, W]
-        tokens = tokens.permute(0, 4, 1, 2, 3).contiguous()
-
-        print("Shape of tokens after _build_latent_volume: ", tokens.shape)
-
-        return tokens
-
     def _decode_pi3_latent_sequence(
         self,
         pi3_latent: torch.Tensor,
@@ -239,43 +213,11 @@ class Pi3GuidedTI2V(nn.Module):
         """
         if not self.use_pi3 or self.pi3 is None:
             return None
-        if pi3_latent is None:
-            return None
-        if isinstance(pi3_latent, list):
-            if len(pi3_latent) == 0:
-                return None
-            pi3_latent = pi3_latent[0]
-        if not isinstance(pi3_latent, torch.Tensor):
-            return None
-        if pi3_latent.dim() < 4:
-            return None
-        if pi3_latent.dim() == 4:
-            pi3_latent = pi3_latent.unsqueeze(0)
-        resolved_target_size = target_size or self._last_pi3_target_size or pi3_latent.shape[-3:]
-        if len(resolved_target_size) != 3:
-            return None
-        target_size = tuple(resolved_target_size)
-
+        resolved_target_size = target_size or self._last_pi3_target_size
         with torch.no_grad():
-            if self.wan.pi3_recover_adapter is not None:
-                expected_channels = self.wan.pi3_recover_adapter.out_channels
-            elif self.pi3 is not None:
-                expected_channels = 2 * self.pi3.dec_embed_dim
-            else:
+            recovered = self.wan.preprocess_pi3_latent(pi3_latent, resolved_target_size)
+            if recovered is None:
                 return None
-            if pi3_latent.shape[1] != expected_channels:
-                recovered = self.wan.recover_pi3_latents(pi3_latent, target_size)
-                if recovered is None:
-                    return None
-            else:
-                recovered = pi3_latent.to(self.device)
-                if recovered.shape[-3:] != target_size:
-                    recovered = F.interpolate(
-                        recovered,
-                        size=target_size,
-                        mode="trilinear",
-                        align_corners=False,
-                    )
             if recovered.dim() == 4:
                 recovered = recovered.unsqueeze(0)
             b, c, f, h, w = recovered.shape
@@ -339,12 +281,13 @@ class Pi3GuidedTI2V(nn.Module):
         if self.use_pi3:
             with torch.no_grad():
                 latents = self.pi3(imgs)
-            latent_volume = self._build_latent_volume(latents)
-            # Cache the Pi3 latent geometry for potential decoding.
-            pi3_target_size = latent_volume.shape[2:]
-            print("Shape of pi3_target_size: ", pi3_target_size)
+            latents["patch_size"] = self.pi3.patch_size
+            latents["patch_start_idx"] = self.pi3.patch_start_idx
+            patch_h = latents['hw'][0] // self.pi3.patch_size
+            patch_w = latents['hw'][1] // self.pi3.patch_size
+            pi3_target_size = (latents['frames'], patch_h, patch_w)
             self._last_pi3_target_size = pi3_target_size
-            video_condition = latent_volume
+            video_condition = latents
         if enable_grad:
             kwargs.setdefault("offload_model", False)
         generated = self.wan.generate(
