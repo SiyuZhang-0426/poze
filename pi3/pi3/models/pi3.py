@@ -171,6 +171,9 @@ class Pi3(nn.Module, PyTorchModelHubMixin):
         return torch.cat([final_output[0], final_output[1]], dim=-1), pos.reshape(B*N, hw, -1)
     
     def _decode_tokens(self, hidden, pos, H, W, B, N):
+        target_dtype = self.point_decoder.projects.weight.dtype
+        hidden = hidden.to(target_dtype)
+        pos = pos.to(target_dtype)
         point_hidden = self.point_decoder(hidden, xpos=pos)
         conf_hidden = self.conf_decoder(hidden, xpos=pos)
         camera_hidden = self.camera_decoder(hidden, xpos=pos)
