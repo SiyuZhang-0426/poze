@@ -382,13 +382,17 @@ class WanTI2V:
         print("Shape of recovered pi3 latents after projection", recovered.shape)
 
         if flatten_to_frames:
+            batch_dim = recovered.shape[0]
+            channel_dim = recovered.shape[1]
             frame_count = recovered.shape[2]
             spatial_h, spatial_w = recovered.shape[3], recovered.shape[4]
-            recovered = recovered.permute(2, 0, 3, 4, 1).reshape(
+            # Reorder to frames-first layout and flatten spatial tokens so shapes align with RGB frames:
+            # (B, C, F, H, W) -> (F, B, H * W, C)
+            recovered = recovered.permute(2, 0, 3, 4, 1).contiguous().view(
                 frame_count,
-                recovered.shape[0],
+                batch_dim,
                 spatial_h * spatial_w,
-                recovered.shape[1],
+                channel_dim,
             )
             print("Shape of recovered pi3 latents after frame-first reshape", recovered.shape)
             return recovered
@@ -412,6 +416,37 @@ class WanTI2V:
                 return None
             pi3_latent = pi3_latent[0]
         return self._recover_pi3_latents(pi3_latent, target_size, flatten_to_frames=flatten_to_frames)
+
+    def _pi3_recovery_dims(
+        self,
+        video_condition: dict,
+        pi3_latent: torch.Tensor,
+        videos: list[torch.Tensor] | tuple[torch.Tensor] | None,
+    ) -> tuple[int, int, int]:
+        """
+        Compute target frame and spatial dimensions for Pi3 latent recovery.
+        """
+        patch_size = video_condition.get("patch_size", None)
+        if patch_size is None:
+            patch_size = self.pi3_patch_size or 1
+        patch_size = max(patch_size, 1)
+        hw = video_condition.get("hw")
+        if hw is None or len(hw) < 2:
+            patch_h = max(1, pi3_latent.shape[-2])
+            patch_w = max(1, pi3_latent.shape[-1])
+        else:
+            patch_h = max(1, hw[0] // patch_size)
+            patch_w = max(1, hw[1] // patch_size)
+        has_video = isinstance(videos, (list, tuple)) and len(videos) > 0
+        target_frames = pi3_latent.shape[1]
+        if has_video:
+            try:
+                video_shape = tuple(getattr(videos[0], "shape", ()))
+                if len(video_shape) >= 2 and video_shape[1] > 0:
+                    target_frames = video_shape[1]
+            except Exception:
+                target_frames = pi3_latent.shape[1]
+        return target_frames, patch_h, patch_w
 
     def _configure_model(self, model, use_sp, dit_fsdp, shard_fn,
                          convert_model_dtype, trainable=False):
@@ -918,6 +953,7 @@ class WanTI2V:
         final_latent = None
         rgb_latent = None
         pi3_latent = None
+        pi3_decoded = None  # remains None when Pi3 recovery is not requested
         x0 = None
 
         # evaluation mode
@@ -1062,17 +1098,19 @@ class WanTI2V:
             if self.rank == 0:
                 videos = self.vae.decode(x0)
                 if pi3_latent is not None:
-                    patch_size = video_condition.get("patch_size", self.pi3_patch_size or 1)
-                    patch_size = max(patch_size, 1)
-                    patch_h = max(1, video_condition["hw"][0] // patch_size)
-                    patch_w = max(1, video_condition["hw"][1] // patch_size)
-                    target_frames = videos[0].shape[1] if videos and len(videos) > 0 else pi3_latent.shape[1]
+                    target_frames, patch_h, patch_w = self._pi3_recovery_dims(
+                        video_condition, pi3_latent, videos
+                    )
                     pi3_decoded = self.recover_pi3_latents(
                         pi3_latent,
                         (target_frames, patch_h, patch_w),
                         flatten_to_frames=True,
                     )
-                    print("Shape of recovered pi3 latents after frame alignment", pi3_decoded.shape)
+                    if pi3_decoded is not None:
+                        logging.info(
+                            "Pi3 latents recovered with frame-first layout (F, B, H*W, C): %s",
+                            tuple(pi3_decoded.shape),
+                        )
 
         output_video = videos[0] if self.rank == 0 else None
         output_pi3_latent = pi3_decoded if self.rank == 0 else None
