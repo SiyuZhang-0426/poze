@@ -184,7 +184,7 @@ def main():
         logging.info("Saved latents to %s", args.save_latents)
 
     if args.save_pi3:
-        pi3_out = outputs.get("pi3")
+        pi3_out = outputs.get("pi3_preds")
         args.save_pi3.parent.mkdir(parents=True, exist_ok=True)
         if pi3_out is None:
             logging.warning("Pi3 predictions unavailable; skipping save_pi3.")
