@@ -321,6 +321,7 @@ class WanTI2V:
         self,
         pi3_latent: torch.Tensor,
         target_size: tuple[int, int, int],
+        flatten_to_frames: bool = False,
     ) -> torch.Tensor | None:
         """
         Recover Pi3 decoder-space latents from diffusion outputs via interpolation + Conv3d.
@@ -380,12 +381,25 @@ class WanTI2V:
 
         print("Shape of recovered pi3 latents after projection", recovered.shape)
 
+        if flatten_to_frames:
+            frame_count = recovered.shape[2]
+            spatial_h, spatial_w = recovered.shape[3], recovered.shape[4]
+            recovered = recovered.permute(2, 0, 3, 4, 1).reshape(
+                frame_count,
+                recovered.shape[0],
+                spatial_h * spatial_w,
+                recovered.shape[1],
+            )
+            print("Shape of recovered pi3 latents after frame-first reshape", recovered.shape)
+            return recovered
+
         return recovered.squeeze(0) if recovered.shape[0] == 1 else recovered
 
     def recover_pi3_latents(
         self,
         pi3_latent: torch.Tensor | list[torch.Tensor] | None,
         target_size: tuple[int, int, int],
+        flatten_to_frames: bool = False,
     ) -> torch.Tensor | None:
         """
         Public wrapper to recover Pi3 latents using the configured recovery adapter.
@@ -397,7 +411,7 @@ class WanTI2V:
             if len(pi3_latent) == 0:
                 return None
             pi3_latent = pi3_latent[0]
-        return self._recover_pi3_latents(pi3_latent, target_size)
+        return self._recover_pi3_latents(pi3_latent, target_size, flatten_to_frames=flatten_to_frames)
 
     def _configure_model(self, model, use_sp, dit_fsdp, shard_fn,
                          convert_model_dtype, trainable=False):
@@ -1048,10 +1062,17 @@ class WanTI2V:
             if self.rank == 0:
                 videos = self.vae.decode(x0)
                 if pi3_latent is not None:
+                    patch_size = video_condition.get("patch_size", self.pi3_patch_size or 1)
+                    patch_size = max(patch_size, 1)
+                    patch_h = max(1, video_condition["hw"][0] // patch_size)
+                    patch_w = max(1, video_condition["hw"][1] // patch_size)
+                    target_frames = videos[0].shape[1] if videos and len(videos) > 0 else pi3_latent.shape[1]
                     pi3_decoded = self.recover_pi3_latents(
-                        pi3_latent, tuple(video_condition["hidden"].shape[-3:])
+                        pi3_latent,
+                        (target_frames, patch_h, patch_w),
+                        flatten_to_frames=True,
                     )
-                    print("Shape of recovered pi3 latents after projection", pi3_decoded.shape)
+                    print("Shape of recovered pi3 latents after frame alignment", pi3_decoded.shape)
 
         output_video = videos[0] if self.rank == 0 else None
         output_pi3_latent = pi3_decoded if self.rank == 0 else None
