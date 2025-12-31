@@ -120,7 +120,10 @@ class Pi3(nn.Module, PyTorchModelHubMixin):
             use_checkpoint=False
         )
         self.camera_head = CameraHead(dim=512)
-        self.decoder_dtype = self.point_decoder.projects.weight.dtype
+        if isinstance(self.point_decoder.projects, nn.Linear):
+            self.decoder_dtype = self.point_decoder.projects.weight.dtype
+        else:
+            self.decoder_dtype = self.register_token.dtype
 
         # For ImageNet Normalize
         image_mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
