@@ -357,6 +357,25 @@ class WanTI2V:
 
         print("Shape of recovered pi3 latents after interpolation", resized.shape)
 
+        if resized.shape[1] != adapter.in_channels:
+            in_ch = resized.shape[1]
+            exp_ch = adapter.in_channels
+            if exp_ch % in_ch == 0:
+                repeat_factor = exp_ch // in_ch
+                resized = resized.repeat(1, repeat_factor, 1, 1, 1)
+            elif in_ch > exp_ch:
+                resized = resized[:, :exp_ch]
+            else:
+                pad_ch = exp_ch - in_ch
+                pad = torch.zeros(
+                    (resized.shape[0], pad_ch, *resized.shape[2:]),
+                    device=resized.device,
+                    dtype=resized.dtype,
+                )
+                resized = torch.cat([resized, pad], dim=1)
+
+            print("Adjusted recovered pi3 channels for adapter", resized.shape)
+
         recovered = adapter(resized)
 
         print("Shape of recovered pi3 latents after projection", recovered.shape)
