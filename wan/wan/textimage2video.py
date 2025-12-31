@@ -357,6 +357,25 @@ class WanTI2V:
 
         print("Shape of recovered pi3 latents after interpolation", resized.shape)
 
+        if resized.shape[1] != adapter.in_channels:
+            in_ch = resized.shape[1]
+            exp_ch = adapter.in_channels
+            if exp_ch % in_ch == 0:
+                repeat_factor = exp_ch // in_ch
+                resized = resized.repeat(1, repeat_factor, 1, 1, 1)
+            elif in_ch > exp_ch:
+                resized = resized[:, :exp_ch]
+            else:
+                pad_ch = exp_ch - in_ch
+                pad = torch.zeros(
+                    (resized.shape[0], pad_ch, *resized.shape[2:]),
+                    device=resized.device,
+                    dtype=resized.dtype,
+                )
+                resized = torch.cat([resized, pad], dim=1)
+
+            print("Adjusted recovered pi3 channels for adapter", resized.shape)
+
         recovered = adapter(resized)
 
         print("Shape of recovered pi3 latents after projection", recovered.shape)
@@ -1029,12 +1048,10 @@ class WanTI2V:
             if self.rank == 0:
                 videos = self.vae.decode(x0)
                 if pi3_latent is not None:
-                    pi3_decoded = self.vae.decode([pi3_latent])[0]
-                    print("Shape of pi3 decoded", pi3_decoded.shape)
                     pi3_decoded = self.recover_pi3_latents(
-                        pi3_decoded, tuple(video_condition["hidden"].shape[-3:])
+                        pi3_latent, tuple(video_condition["hidden"].shape[-3:])
                     )
-                    print("Shape of pi3 decoded after recovery", pi3_decoded.shape)
+                    print("Shape of recovered pi3 latents after projection", pi3_decoded.shape)
 
         output_video = videos[0] if self.rank == 0 else None
         output_pi3_latent = pi3_decoded if self.rank == 0 else None
