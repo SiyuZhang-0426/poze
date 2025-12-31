@@ -120,6 +120,7 @@ class Pi3(nn.Module, PyTorchModelHubMixin):
             use_checkpoint=False
         )
         self.camera_head = CameraHead(dim=512)
+        self.decoder_dtype = self.point_decoder.projects.weight.dtype
 
         # For ImageNet Normalize
         image_mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
@@ -171,9 +172,8 @@ class Pi3(nn.Module, PyTorchModelHubMixin):
         return torch.cat([final_output[0], final_output[1]], dim=-1), pos.reshape(B*N, hw, -1)
     
     def _decode_tokens(self, hidden, pos, H, W, B, N):
-        target_dtype = self.point_decoder.projects.weight.dtype
-        hidden = hidden.to(target_dtype)
-        pos = pos.to(target_dtype)
+        hidden = hidden.to(self.decoder_dtype)
+        pos = pos.to(self.decoder_dtype)
         point_hidden = self.point_decoder(hidden, xpos=pos)
         conf_hidden = self.conf_decoder(hidden, xpos=pos)
         camera_hidden = self.camera_decoder(hidden, xpos=pos)
