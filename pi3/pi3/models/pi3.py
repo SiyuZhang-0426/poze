@@ -204,11 +204,11 @@ class Pi3(nn.Module, PyTorchModelHubMixin):
     def decode_from_latents(self, latents):
         H, W = latents['hw']
         B = latents.get('batch', 1)
-        N = latents.get('frames', latents['point_tokens'].shape[0] // B)
+        hidden_tokens = latents['hidden']
+        N = latents.get('frames', hidden_tokens.shape[0] // B)
         return self._decode_tokens(
-            latents['point_tokens'],
-            latents['conf_tokens'],
-            latents['camera_tokens'],
+            hidden_tokens,
+            latents['pos'],
             H,
             W,
             B,
