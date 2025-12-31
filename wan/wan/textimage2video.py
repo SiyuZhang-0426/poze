@@ -1029,12 +1029,10 @@ class WanTI2V:
             if self.rank == 0:
                 videos = self.vae.decode(x0)
                 if pi3_latent is not None:
-                    pi3_decoded = self.vae.decode([pi3_latent])[0]
-                    print("Shape of pi3 decoded", pi3_decoded.shape)
                     pi3_decoded = self.recover_pi3_latents(
-                        pi3_decoded, tuple(video_condition["hidden"].shape[-3:])
+                        pi3_latent, tuple(video_condition["hidden"].shape[-3:])
                     )
-                    print("Shape of pi3 decoded after recovery", pi3_decoded.shape)
+                    print("Shape of recovered pi3 latents after projection", pi3_decoded.shape)
 
         output_video = videos[0] if self.rank == 0 else None
         output_pi3_latent = pi3_decoded if self.rank == 0 else None
