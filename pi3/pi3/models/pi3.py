@@ -120,6 +120,17 @@ class Pi3(nn.Module, PyTorchModelHubMixin):
             use_checkpoint=False
         )
         self.camera_head = CameraHead(dim=512)
+        # When projection is disabled, projects becomes Identity and lacks weights; fall back to register dtype.
+        decoder_dtypes = []
+        for decoder in (self.point_decoder, self.conf_decoder, self.camera_decoder):
+            proj = decoder.projects
+            if isinstance(proj, nn.Linear):
+                decoder_dtypes.append(proj.weight.dtype)
+            else:
+                decoder_dtypes.append(self.register_token.dtype)
+        if len(set(decoder_dtypes)) > 1:
+            raise ValueError("Decoder projection dtypes must match")
+        self.decoder_dtype = decoder_dtypes[0]
 
         # For ImageNet Normalize
         image_mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
@@ -171,6 +182,8 @@ class Pi3(nn.Module, PyTorchModelHubMixin):
         return torch.cat([final_output[0], final_output[1]], dim=-1), pos.reshape(B*N, hw, -1)
     
     def _decode_tokens(self, hidden, pos, H, W, B, N):
+        hidden = hidden.to(self.decoder_dtype)
+        pos = pos.to(self.decoder_dtype)
         point_hidden = self.point_decoder(hidden, xpos=pos)
         conf_hidden = self.conf_decoder(hidden, xpos=pos)
         camera_hidden = self.camera_decoder(hidden, xpos=pos)
@@ -201,11 +214,15 @@ class Pi3(nn.Module, PyTorchModelHubMixin):
     def decode_from_latents(self, latents):
         H, W = latents['hw']
         B = latents.get('batch', 1)
-        N = latents.get('frames', latents['point_tokens'].shape[0] // B)
+        hidden_tokens = latents['hidden']
+        N = latents.get('frames', hidden_tokens.shape[0] // B)
+        # Latents produced by forward() already contain stitched hidden tokens and positions for decoding.
+        pos_tokens = latents.get('pos')
+        if pos_tokens is None:
+            raise KeyError("latents must include 'pos' for decoding")
         return self._decode_tokens(
-            latents['point_tokens'],
-            latents['conf_tokens'],
-            latents['camera_tokens'],
+            hidden_tokens,
+            pos_tokens,
             H,
             W,
             B,
