@@ -121,11 +121,16 @@ class Pi3(nn.Module, PyTorchModelHubMixin):
         )
         self.camera_head = CameraHead(dim=512)
         # When projection is disabled, projects becomes Identity and lacks weights; fall back to register dtype.
-        # All decoder projections are constructed with the same settings, so their dtypes are expected to match.
-        if isinstance(self.point_decoder.projects, nn.Linear):
-            self.decoder_dtype = self.point_decoder.projects.weight.dtype
-        else:
-            self.decoder_dtype = self.register_token.dtype
+        decoder_dtypes = []
+        for decoder in (self.point_decoder, self.conf_decoder, self.camera_decoder):
+            proj = decoder.projects
+            if isinstance(proj, nn.Linear):
+                decoder_dtypes.append(proj.weight.dtype)
+            else:
+                decoder_dtypes.append(self.register_token.dtype)
+        if len(set(decoder_dtypes)) > 1:
+            raise ValueError("Decoder projection dtypes must match")
+        self.decoder_dtype = decoder_dtypes[0]
 
         # For ImageNet Normalize
         image_mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
