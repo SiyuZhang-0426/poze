@@ -121,6 +121,7 @@ class Pi3(nn.Module, PyTorchModelHubMixin):
         )
         self.camera_head = CameraHead(dim=512)
         # When projection is disabled, projects becomes Identity and lacks weights; fall back to register dtype.
+        # All decoder projections are constructed with the same settings, so their dtypes are expected to match.
         if isinstance(self.point_decoder.projects, nn.Linear):
             self.decoder_dtype = self.point_decoder.projects.weight.dtype
         else:
@@ -211,9 +212,12 @@ class Pi3(nn.Module, PyTorchModelHubMixin):
         hidden_tokens = latents['hidden']
         N = latents.get('frames', hidden_tokens.shape[0] // B)
         # Latents produced by forward() already contain stitched hidden tokens and positions for decoding.
+        pos_tokens = latents.get('pos')
+        if pos_tokens is None:
+            raise KeyError("latents must include 'pos' for decoding")
         return self._decode_tokens(
             hidden_tokens,
-            latents['pos'],
+            pos_tokens,
             H,
             W,
             B,
