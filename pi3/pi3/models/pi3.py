@@ -183,7 +183,7 @@ class Pi3(nn.Module, PyTorchModelHubMixin):
     
     def _decode_tokens(self, hidden, pos, H, W, B, N):
         hidden = hidden.to(self.decoder_dtype)
-        # positional indices must remain integer for RoPE embedding
+        # keep positional indices integer and aligned to hidden device for RoPE embedding
         pos = pos.to(device=hidden.device, dtype=torch.long)
         point_hidden = self.point_decoder(hidden, xpos=pos)
         conf_hidden = self.conf_decoder(hidden, xpos=pos)
