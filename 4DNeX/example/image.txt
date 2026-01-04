@@ -1,1 +1,0 @@
-./example/amusement_park.png
