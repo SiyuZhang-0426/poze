@@ -240,10 +240,8 @@ class Pi3GuidedTI2V(nn.Module):
             pi3_latent = None
         pi3_preds = None
         if decode_pi3 and pi3_latent is not None:
-
             print("Shape of pi3 latents before decode", pi3_latent.shape)
-
-            # pi3_preds = self._decode_pi3_latent_sequence(pi3_latent)
+            pi3_preds = self._decode_pi3_latent_sequence(pi3_latent)
         return {
             "video": video,
             "rgb_latent": rgb_latent,

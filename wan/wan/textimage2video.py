@@ -1101,6 +1101,8 @@ class WanTI2V:
                     target_frames, patch_h, patch_w = self._pi3_recovery_dims(
                         video_condition, pi3_latent, videos
                     )
+                    # test if pi3 decoding is correct
+                    target_frames = 1
                     pi3_decoded = self.recover_pi3_latents(
                         pi3_latent,
                         (target_frames, patch_h, patch_w),
@@ -1108,7 +1110,7 @@ class WanTI2V:
                     )
                     if pi3_decoded is not None:
                         logging.info(
-                            "Pi3 latents recovered with frame-first layout (F, B, H*W, C): %s",
+                            "Pi3 latents recovered with frame-first layout (F, B, H * W, C): %s",
                             tuple(pi3_decoded.shape),
                         )
 
