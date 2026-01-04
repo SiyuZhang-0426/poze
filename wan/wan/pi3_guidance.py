@@ -169,6 +169,7 @@ class Pi3GuidedTI2V(nn.Module):
             recovered = pi3_latent
             if recovered is None:
                 return None
+            # cached Pi3 shape stores register + spatial tokens; subtract registers to recover patch_h * patch_w.
             expected_hw = (
                 None
                 if self._pi3_shape is None
@@ -191,6 +192,7 @@ class Pi3GuidedTI2V(nn.Module):
                     w = max(1, input_w_pix // patch_size)
                 else:
                     root = int(math.sqrt(hw))
+                    # hw reflects patch grids (typically a few thousand tokens), so a short descending scan is cheap.
                     h = next(
                         (cand for cand in range(root, 0, -1) if hw % cand == 0),
                         1,
