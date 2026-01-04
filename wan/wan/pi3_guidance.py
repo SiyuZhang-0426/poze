@@ -184,13 +184,12 @@ class Pi3GuidedTI2V(nn.Module):
                     h = max(1, h_pix // patch_size)
                     w = max(1, w_pix // patch_size)
                 else:
-                    h = 1
-                    for cand in range(int(math.sqrt(hw)), 0, -1):
-                        if hw % cand == 0:
-                            h = cand
-                            break
+                    h = next(
+                        (cand for cand in range(int(math.sqrt(hw)), 0, -1) if hw % cand == 0),
+                        1,
+                    )
                     # Fallback picks the largest divisor near sqrt(hw) to keep aspect ratio reasonable.
-                    w = max(1, hw // h)
+                    w = hw // h
                 tokens = batch_first.reshape(b * f, hw, c)
             else:
                 if recovered.dim() == 4:
