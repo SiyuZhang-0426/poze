@@ -70,6 +70,12 @@ def _parse_args() -> argparse.Namespace:
         help="Preview frame rate for the saved animation.",
     )
     parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Optional random seed for downsampling (omit to vary samples each run).",
+    )
+    parser.add_argument(
         "--title",
         default="Poze point cloud",
         help="Title to overlay on the preview.",
@@ -129,23 +135,25 @@ def _load_point_cloud(path: Path) -> Tuple[np.ndarray, np.ndarray | None]:
 
 
 def _maybe_downsample(
-    xyz: np.ndarray, rgb: np.ndarray | None, max_points: int
+    xyz: np.ndarray, rgb: np.ndarray | None, max_points: int, seed: int | None
 ) -> Tuple[np.ndarray, np.ndarray | None]:
     if max_points is None or max_points <= 0 or len(xyz) <= max_points:
         return xyz, rgb
 
-    rng = np.random.default_rng(0)
+    rng = np.random.default_rng(seed)
     idx = rng.choice(len(xyz), size=max_points, replace=False)
     xyz_ds = xyz[idx]
     rgb_ds = rgb[idx] if rgb is not None else None
     return xyz_ds, rgb_ds
 
 
-def _prepare_frames(paths: Sequence[Path], max_points: int) -> List[PointCloud]:
+def _prepare_frames(
+    paths: Sequence[Path], max_points: int, seed: int | None
+) -> List[PointCloud]:
     frames: List[PointCloud] = []
     for p in paths:
         xyz, rgb = _load_point_cloud(p)
-        xyz, rgb = _maybe_downsample(xyz, rgb, max_points)
+        xyz, rgb = _maybe_downsample(xyz, rgb, max_points, seed)
         frames.append((xyz, rgb, p.name))
     return frames
 
@@ -193,8 +201,12 @@ def _render_sequence(
             if rgb is not None:
                 colors = rgb
             else:
-                z_norm = (xyz[:, 2] - xyz[:, 2].min()) / (xyz[:, 2].ptp() + 1e-6)
-                colors = plt.cm.viridis(z_norm)
+                z_range = xyz[:, 2].ptp()
+                if z_range <= 0:
+                    colors = np.full((len(xyz), 4), plt.cm.viridis(0.5))
+                else:
+                    z_norm = (xyz[:, 2] - xyz[:, 2].min()) / z_range
+                    colors = plt.cm.viridis(z_norm)
 
             scatter = ax.scatter(
                 xyz[:, 0],
@@ -217,7 +229,7 @@ def _render_sequence(
 def main() -> None:
     args = _parse_args()
     ply_paths = _expand_sources(args.input, args.stride)
-    frames = _prepare_frames(ply_paths, args.max_points)
+    frames = _prepare_frames(ply_paths, args.max_points, args.seed)
     _render_sequence(frames, args.save, args.fps, args.title, args.elev, args.azim)
     print(f"Saved preview to {args.save} ({len(frames)} frame(s)).")
 
