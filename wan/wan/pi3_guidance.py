@@ -189,6 +189,7 @@ class Pi3GuidedTI2V(nn.Module):
                         if hw % cand == 0:
                             h = cand
                             break
+                    # Fallback picks the largest divisor near sqrt(hw) to keep aspect ratio reasonable.
                     w = max(1, hw // h)
                 tokens = batch_first.reshape(b * f, hw, c)
             else:
