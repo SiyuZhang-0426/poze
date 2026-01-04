@@ -34,6 +34,16 @@ Options: `--pi3-id`, `--wan-id`, and `--revision` allow pointing to custom repos
 - `scripts/pozeinference.sh`: Slurm+Apptainer example that wraps `inference.py` with Pi3 guidance. Edit the image path, prompt, checkpoint locations, and cluster settings, then submit via `sbatch scripts/pozeinference.sh` (or run the python command inside the script directly on a workstation).
 - `scripts/pozefinetune.sh`: empty placeholder for a similar Slurm entrypoint to finetune; duplicate `pozeinference.sh` as a starting template (or mirror its commands) and fill in your dataset/paths.
 
+### Visualize PLY point clouds
+Render a quick mp4/gif preview from a single `.ply` file or a directory/glob of PLY frames (requires `matplotlib`, `plyfile`, and `imageio[ffmpeg]`):
+```bash
+python visualize_ply_sequence.py \
+  --input outputs/pi3_points \
+  --save outputs/pi3_points_preview.mp4 \
+  --max-points 60000 \
+  --fps 6
+```
+
 ## Inference
 Generate a video with Pi3 guidance:
 ```bash
