@@ -163,6 +163,7 @@ class Pi3GuidedTI2V(nn.Module):
         Returns:
             Dict of decoded Pi3 predictions (points/conf/camera) or None when input is invalid.
         """
+        print("Shape of input pi3 latents before decode", pi3_latent.shape)
         if not self.use_pi3 or self.pi3 is None:
             return None
         with torch.no_grad():
@@ -205,7 +206,8 @@ class Pi3GuidedTI2V(nn.Module):
                     recovered = recovered.unsqueeze(0)
                 b, c, f, h, w = recovered.shape
                 tokens = recovered.permute(0, 2, 3, 4, 1).reshape(b * f, h * w, c)
-
+            
+            print("Shape of tokens after operation", tokens.shape)
             register = torch.cat(
                 [self.pi3.register_token, self.pi3.register_token],
                 dim=-1,
@@ -216,7 +218,7 @@ class Pi3GuidedTI2V(nn.Module):
                 tokens.shape[-1],
             )
             decoder_hidden = torch.cat([register, tokens], dim=1)
-
+            print("Shape of decoder hidden input", decoder_hidden.shape)
             pos = self.pi3.position_getter(
                 b * f, h, w, tokens.device).to(tokens.dtype)
             pos = pos + 1
