@@ -157,7 +157,9 @@ def _load_point_cloud(path: Path) -> Tuple[np.ndarray, np.ndarray | None]:
 def _maybe_downsample(
     xyz: np.ndarray, rgb: np.ndarray | None, max_points: int, seed: int | None
 ) -> Tuple[np.ndarray, np.ndarray | None]:
-    if max_points <= 0 or len(xyz) <= max_points:
+    if max_points < 0:
+        raise ValueError("max_points must be non-negative")
+    if max_points == 0 or len(xyz) <= max_points:
         return xyz, rgb
 
     rng = np.random.default_rng(seed)
@@ -181,13 +183,9 @@ def _prepare_frames(
 def _global_bounds(
     frames: Sequence[PointCloud], pad_fraction: float, min_pad: float
 ) -> Tuple[np.ndarray, np.ndarray]:
-    mins = []
-    maxs = []
-    for xyz, _, _ in frames:
-        mins.append(np.min(xyz, axis=0))
-        maxs.append(np.max(xyz, axis=0))
-    low = np.vstack(mins).min(axis=0)
-    high = np.vstack(maxs).max(axis=0)
+    all_points = np.concatenate([xyz for xyz, _, _ in frames], axis=0)
+    low = all_points.min(axis=0)
+    high = all_points.max(axis=0)
     span = (high - low).max()
     pad = max(min_pad, pad_fraction * span) if span > 0 else min_pad
     return low - pad, high + pad
@@ -229,11 +227,13 @@ def _render_sequence(
             if rgb is not None:
                 colors = rgb
             else:
-                z_range = xyz[:, 2].ptp()
+                z_values = xyz[:, 2]
+                z_min = z_values.min()
+                z_range = z_values.max() - z_min
                 if z_range <= 0:
                     colors = plt.cm.viridis(0.5)
                 else:
-                    z_norm = (xyz[:, 2] - xyz[:, 2].min()) / z_range
+                    z_norm = (z_values - z_min) / z_range
                     colors = plt.cm.viridis(z_norm)
 
             scatter = ax.scatter(
