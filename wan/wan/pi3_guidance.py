@@ -180,15 +180,16 @@ class Pi3GuidedTI2V(nn.Module):
                 b, f, hw, c = batch_first.shape
                 patch_size = self.pi3.patch_size
                 if self._pi3_hw is not None:
-                    h_pix, w_pix = self._pi3_hw
-                    h = max(1, h_pix // patch_size)
-                    w = max(1, w_pix // patch_size)
+                    input_h_pix, input_w_pix = self._pi3_hw
+                    h = max(1, input_h_pix // patch_size)
+                    w = max(1, input_w_pix // patch_size)
                 else:
+                    root = int(math.sqrt(hw))
                     h = next(
-                        (cand for cand in range(int(math.sqrt(hw)), 0, -1) if hw % cand == 0),
+                        (cand for cand in range(root, 0, -1) if hw % cand == 0),
                         1,
                     )
-                    # Fallback picks the largest divisor near sqrt(hw) to keep aspect ratio reasonable.
+                    # Token counts are small; scan for the largest divisor <= sqrt(hw) to keep aspect ratio reasonable.
                     w = hw // h
                 tokens = batch_first.reshape(b * f, hw, c)
             else:
