@@ -14,6 +14,7 @@ Example:
         --fps 6
 
 Requires matplotlib (install with: pip install matplotlib).
+Also needs plyfile and imageio[ffmpeg] (pip install plyfile imageio[ffmpeg]).
 """
 from __future__ import annotations
 
@@ -107,7 +108,13 @@ def _expand_sources(source: str, stride: int) -> List[Path]:
 
 def _load_point_cloud(path: Path) -> Tuple[np.ndarray, np.ndarray | None]:
     ply_data = PlyData.read(str(path))
-    vertex = ply_data["vertex"].data
+    try:
+        vertex = ply_data["vertex"].data
+    except KeyError as exc:
+        raise ValueError(f"{path} does not contain a 'vertex' element") from exc
+
+    if len(vertex) == 0:
+        raise ValueError(f"{path} contains no vertex data")
     xyz = np.vstack((vertex["x"], vertex["y"], vertex["z"])).T.astype(np.float32)
 
     has_color = {"red", "green", "blue"}.issubset(vertex.dtype.names)
@@ -176,16 +183,27 @@ def _render_sequence(
     ax.set_xlabel("X")
     ax.set_ylabel("Y")
     ax.set_zlabel("Z")
-    scatter = ax.scatter([], [], [], s=0.5, depthshade=False)
+    scatter = None
 
     with imageio.get_writer(save_path, fps=fps) as writer:
         for idx, (xyz, rgb, label) in enumerate(frames, start=1):
-            scatter._offsets3d = (xyz[:, 0], xyz[:, 1], xyz[:, 2])  # type: ignore[attr-defined]
+            if scatter is not None:
+                scatter.remove()
+
             if rgb is not None:
-                scatter.set_color(rgb)
+                colors = rgb
             else:
                 z_norm = (xyz[:, 2] - xyz[:, 2].min()) / (xyz[:, 2].ptp() + 1e-6)
-                scatter.set_color(plt.cm.viridis(z_norm))
+                colors = plt.cm.viridis(z_norm)
+
+            scatter = ax.scatter(
+                xyz[:, 0],
+                xyz[:, 1],
+                xyz[:, 2],
+                s=0.5,
+                depthshade=False,
+                c=colors,
+            )
 
             ax.set_title(f"{title} — frame {idx}/{len(frames)} ({label})")
             fig.canvas.draw()
