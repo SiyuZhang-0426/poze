@@ -72,6 +72,12 @@ def _parse_args() -> argparse.Namespace:
         help="Optional random seed for downsampling (omit to vary samples each run).",
     )
     parser.add_argument(
+        "--point-size",
+        type=float,
+        default=0.5,
+        help="Matplotlib scatter point size.",
+    )
+    parser.add_argument(
         "--title",
         default="Poze point cloud",
         help="Title to overlay on the preview.",
@@ -87,6 +93,18 @@ def _parse_args() -> argparse.Namespace:
         type=float,
         default=-60.0,
         help="Azimuth angle for the 3D view (degrees).",
+    )
+    parser.add_argument(
+        "--pad-fraction",
+        type=float,
+        default=0.05,
+        help="Axis padding as a fraction of the max span.",
+    )
+    parser.add_argument(
+        "--min-pad",
+        type=float,
+        default=0.1,
+        help="Minimum absolute axis padding.",
     )
     return parser.parse_args()
 
@@ -160,7 +178,9 @@ def _prepare_frames(
     return frames
 
 
-def _global_bounds(frames: Sequence[PointCloud]) -> Tuple[np.ndarray, np.ndarray]:
+def _global_bounds(
+    frames: Sequence[PointCloud], pad_fraction: float, min_pad: float
+) -> Tuple[np.ndarray, np.ndarray]:
     mins = []
     maxs = []
     for xyz, _, _ in frames:
@@ -169,7 +189,7 @@ def _global_bounds(frames: Sequence[PointCloud]) -> Tuple[np.ndarray, np.ndarray
     low = np.vstack(mins).min(axis=0)
     high = np.vstack(maxs).max(axis=0)
     span = (high - low).max()
-    pad = 0.05 * span if span > 0 else 0.1
+    pad = max(min_pad, pad_fraction * span) if span > 0 else min_pad
     return low - pad, high + pad
 
 
@@ -180,6 +200,9 @@ def _render_sequence(
     title: str,
     elev: float,
     azim: float,
+    point_size: float,
+    pad_fraction: float,
+    min_pad: float,
 ) -> None:
     if not frames:
         raise ValueError("No valid PLY frames to render.")
@@ -187,7 +210,7 @@ def _render_sequence(
 
     fig = plt.figure(figsize=(6, 6))
     ax = fig.add_subplot(111, projection="3d")
-    low, high = _global_bounds(frames)
+    low, high = _global_bounds(frames, pad_fraction, min_pad)
     ax.set_xlim(low[0], high[0])
     ax.set_ylim(low[1], high[1])
     ax.set_zlim(low[2], high[2])
@@ -198,7 +221,7 @@ def _render_sequence(
     scatter = None
 
     with imageio.get_writer(save_path, fps=fps) as writer:
-        # Stream frames to the writer to avoid holding the full sequence in memory.
+        # Frames are preloaded; stream them to the writer to keep the encoder footprint small.
         for idx, (xyz, rgb, label) in enumerate(frames, start=1):
             if scatter is not None:
                 scatter.remove()
@@ -217,7 +240,7 @@ def _render_sequence(
                 xyz[:, 0],
                 xyz[:, 1],
                 xyz[:, 2],
-                s=0.5,
+                s=point_size,
                 depthshade=False,
                 c=colors,
             )
@@ -235,7 +258,17 @@ def main() -> None:
     args = _parse_args()
     ply_paths = _expand_sources(args.input, args.stride)
     frames = _prepare_frames(ply_paths, args.max_points, args.seed)
-    _render_sequence(frames, args.save, args.fps, args.title, args.elev, args.azim)
+    _render_sequence(
+        frames,
+        args.save,
+        args.fps,
+        args.title,
+        args.elev,
+        args.azim,
+        args.point_size,
+        args.pad_fraction,
+        args.min_pad,
+    )
     print(f"Saved preview to {args.save} ({len(frames)} frame(s)).")
 
 
