@@ -1,17 +1,13 @@
 #!/usr/bin/env python3
 """
-Caption: Quick viewer for Poze-generated .ply point clouds or sequences.
+Description: Quick viewer for Poze-generated .ply point clouds or sequences.
 
 This helper loads one or more PLY files (a single path, glob, or directory),
 optionally downsamples the points, and writes a lightweight mp4/gif preview
 with consistent axis limits so you can scrub through Poze outputs quickly.
 
 Example:
-    python visualize_ply_sequence.py \\
-        --input outputs/pi3_points \\
-        --save outputs/pi3_points_preview.mp4 \\
-        --max-points 60000 \\
-        --fps 6
+    python visualize_ply_sequence.py --input outputs/pi3_points --save outputs/pi3_points_preview.mp4 --max-points 60000 --fps 6
 
 Requires matplotlib (install with: pip install matplotlib).
 Also needs plyfile and imageio[ffmpeg] (pip install plyfile imageio[ffmpeg]).
@@ -203,7 +199,7 @@ def _render_sequence(
             else:
                 z_range = xyz[:, 2].ptp()
                 if z_range <= 0:
-                    colors = np.full((len(xyz), 4), plt.cm.viridis(0.5))
+                    colors = np.tile(plt.cm.viridis(0.5), (len(xyz), 1))
                 else:
                     z_norm = (xyz[:, 2] - xyz[:, 2].min()) / z_range
                     colors = plt.cm.viridis(z_norm)
