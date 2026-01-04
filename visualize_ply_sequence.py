@@ -102,7 +102,8 @@ def _expand_sources(source: str, stride: int) -> List[Path]:
         else:
             paths = [src_path]
 
-    paths = sorted(paths)[:: max(stride, 1)]
+    stride = max(stride, 1)
+    paths = sorted(paths)[::stride]
     if not paths:
         raise FileNotFoundError(f"No PLY files found for {source}")
     return paths
@@ -197,6 +198,7 @@ def _render_sequence(
     scatter = None
 
     with imageio.get_writer(save_path, fps=fps) as writer:
+        # Stream frames to the writer to avoid holding the full sequence in memory.
         for idx, (xyz, rgb, label) in enumerate(frames, start=1):
             if scatter is not None:
                 scatter.remove()
@@ -206,7 +208,7 @@ def _render_sequence(
             else:
                 z_range = xyz[:, 2].ptp()
                 if z_range <= 0:
-                    colors = np.tile(plt.cm.viridis(0.5), (len(xyz), 1))
+                    colors = plt.cm.viridis(0.5)
                 else:
                     z_norm = (xyz[:, 2] - xyz[:, 2].min()) / z_range
                     colors = plt.cm.viridis(z_norm)
