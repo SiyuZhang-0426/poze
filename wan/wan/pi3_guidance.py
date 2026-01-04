@@ -37,6 +37,7 @@ class Pi3GuidedTI2V(nn.Module):
         self.use_pi3 = use_pi3
         self.device = torch.device(device)
         self._pi3_shape: Optional[Tuple[int, int, int]] = None
+        self._pi3_hw: Optional[Tuple[int, int]] = None
         if self.use_pi3:
             if pi3_checkpoint is None:
                 self.pi3 = Pi3.from_pretrained(pi3_pretrained_id).to(self.device)
@@ -155,8 +156,9 @@ class Pi3GuidedTI2V(nn.Module):
         Recover dynamic Pi3 latents (returned by diffusion) back to Pi3 head inputs and decode them per frame.
 
         Args:
-            pi3_latent: Tensor of shape (C, F, H, W) or (B, C, F, H, W) representing the Pi3 latent slice
-                produced by the diffusion model after the forward pass.
+            pi3_latent: Tensor of shape (C, F, H, W), (B, C, F, H, W), or frame-first flattened
+                layout (F, B, H * W, C) representing the Pi3 latent slice produced by the diffusion
+                model after the forward pass.
 
         Returns:
             Dict of decoded Pi3 predictions (points/conf/camera) or None when input is invalid.
@@ -167,11 +169,43 @@ class Pi3GuidedTI2V(nn.Module):
             recovered = pi3_latent
             if recovered is None:
                 return None
-            if recovered.dim() == 4:
-                recovered = recovered.unsqueeze(0)
-            b, c, f, h, w = recovered.shape
-            # Rebuild decoder_hidden tokens (without registers) then prepend doubled register tokens.
-            tokens = recovered.permute(0, 2, 3, 4, 1).reshape(b * f, h * w, c)
+            # cached Pi3 shape stores register + spatial tokens; subtract registers to recover patch_h * patch_w.
+            expected_hw = (
+                None
+                if self._pi3_shape is None
+                else max(1, self._pi3_shape[1] - self.pi3.patch_start_idx)
+            )
+            # frame-first layout indicates recovered latents shaped as (F, B, H * W, 2 * dec_embed_dim)
+            frame_first = (
+                recovered.dim() == 4
+                and recovered.shape[-1] == 2 * self.pi3.dec_embed_dim
+                and (expected_hw is None or recovered.shape[-2] == expected_hw)
+            )
+            if frame_first:
+                f, b, hw, c = recovered.shape
+                batch_first = recovered.permute(1, 0, 2, 3)  # (B, F, HW, C)
+                b, f, hw, c = batch_first.shape
+                patch_size = self.pi3.patch_size
+                if self._pi3_hw is not None:
+                    input_h_pix, input_w_pix = self._pi3_hw
+                    h = max(1, input_h_pix // patch_size)
+                    w = max(1, input_w_pix // patch_size)
+                else:
+                    root = int(math.sqrt(hw))
+                    # hw reflects patch grids (typically a few thousand tokens), so a short descending scan is cheap.
+                    h = next(
+                        (cand for cand in range(root, 0, -1) if hw % cand == 0),
+                        1,
+                    )
+                    # Token counts are small; the descending scan returns the largest divisor <= sqrt(hw) to keep aspect ratio reasonable.
+                    w = hw // h
+                tokens = batch_first.reshape(b * f, hw, c)
+            else:
+                if recovered.dim() == 4:
+                    recovered = recovered.unsqueeze(0)
+                b, c, f, h, w = recovered.shape
+                tokens = recovered.permute(0, 2, 3, 4, 1).reshape(b * f, h * w, c)
+
             register = torch.cat(
                 [self.pi3.register_token, self.pi3.register_token],
                 dim=-1,
@@ -179,7 +213,7 @@ class Pi3GuidedTI2V(nn.Module):
             register = register.repeat(b, f, 1, 1).reshape(
                 b * f,
                 self.pi3.patch_start_idx,
-                c,
+                tokens.shape[-1],
             )
             decoder_hidden = torch.cat([register, tokens], dim=1)
 
@@ -218,6 +252,7 @@ class Pi3GuidedTI2V(nn.Module):
             latents["patch_size"] = self.pi3.patch_size
             latents["patch_start_idx"] = self.pi3.patch_start_idx
             self._pi3_shape = latents["hidden"].shape
+            self._pi3_hw = latents.get("hw")
 
             video_condition = latents
         if enable_grad:
