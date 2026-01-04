@@ -117,7 +117,12 @@ def _load_point_cloud(path: Path) -> Tuple[np.ndarray, np.ndarray | None]:
 
     if len(vertex) == 0:
         raise ValueError(f"{path} contains no vertex data")
-    xyz = np.vstack((vertex["x"], vertex["y"], vertex["z"])).T.astype(np.float32)
+    required_fields = ("x", "y", "z")
+    missing_fields = [f for f in required_fields if f not in vertex.dtype.names]
+    if missing_fields:
+        raise ValueError(f"{path} is missing vertex fields: {', '.join(missing_fields)}")
+
+    xyz = np.column_stack([vertex[f] for f in required_fields]).astype(np.float32)
 
     has_color = {"red", "green", "blue"}.issubset(vertex.dtype.names)
     rgb = None
@@ -133,7 +138,7 @@ def _load_point_cloud(path: Path) -> Tuple[np.ndarray, np.ndarray | None]:
 def _maybe_downsample(
     xyz: np.ndarray, rgb: np.ndarray | None, max_points: int, seed: int | None
 ) -> Tuple[np.ndarray, np.ndarray | None]:
-    if max_points is None or max_points <= 0 or len(xyz) <= max_points:
+    if max_points <= 0 or len(xyz) <= max_points:
         return xyz, rgb
 
     rng = np.random.default_rng(seed)
@@ -175,6 +180,8 @@ def _render_sequence(
     elev: float,
     azim: float,
 ) -> None:
+    if not frames:
+        raise ValueError("No valid PLY frames to render.")
     save_path.parent.mkdir(parents=True, exist_ok=True)
 
     fig = plt.figure(figsize=(6, 6))
