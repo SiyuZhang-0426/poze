@@ -8,9 +8,9 @@ if __name__ == '__main__':
     # --- Argument Parsing ---
     parser = argparse.ArgumentParser(description="Run inference with the Pi3 model.")
     
-    parser.add_argument("--data_path", type=str, default='examples/skating.mp4',
+    parser.add_argument("--data_path", type=str, default='zsydesk',
                         help="Path to the input image directory or a video file.")
-    parser.add_argument("--save_path", type=str, default='examples/result.ply',
+    parser.add_argument("--save_path", type=str, default='outputs/result.ply',
                         help="Path to save the output .ply file.")
     parser.add_argument("--interval", type=int, default=-1,
                         help="Interval to sample image. Default: 1 for images dir, 10 for video")
@@ -52,14 +52,14 @@ if __name__ == '__main__':
     dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
     with torch.no_grad():
         with torch.amp.autocast('cuda', dtype=dtype):
-            res = model(imgs[None]) # Add batch dimension
+            res = model.original_forward(imgs[None]) # Add batch dimension
 
-    # # 4. process mask
-    # masks = torch.sigmoid(res['conf'][..., 0]) > 0.1
-    # non_edge = ~depth_edge(res['local_points'][..., 2], rtol=0.03)
-    # masks = torch.logical_and(masks, non_edge)[0]
+    # 4. process mask
+    masks = torch.sigmoid(res['conf'][..., 0]) > 0.1
+    non_edge = ~depth_edge(res['local_points'][..., 2], rtol=0.03)
+    masks = torch.logical_and(masks, non_edge)[0]
 
-    # # 5. Save points
-    # print(f"Saving point cloud to: {args.save_path}")
-    # write_ply(res['points'][0][masks].cpu(), imgs.permute(0, 2, 3, 1)[masks], args.save_path)
-    # print("Done.")
+    # 5. Save points
+    print(f"Saving point cloud to: {args.save_path}")
+    write_ply(res['points'][0][masks].cpu(), imgs.permute(0, 2, 3, 1)[masks], args.save_path)
+    print("Done.")

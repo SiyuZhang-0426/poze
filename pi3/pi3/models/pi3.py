@@ -255,3 +255,48 @@ class Pi3(nn.Module, PyTorchModelHubMixin):
             frames=N,
             batch=B,
         )
+
+    def original_forward(self, imgs):
+        imgs = (imgs - self.image_mean) / self.image_std
+
+        B, N, _, H, W = imgs.shape
+        patch_h, patch_w = H // 14, W // 14
+        
+        # encode by dinov2
+        imgs = imgs.reshape(B*N, _, H, W)
+        hidden = self.encoder(imgs, is_training=True)
+
+        if isinstance(hidden, dict):
+            hidden = hidden["x_norm_patchtokens"]
+
+        hidden, pos = self.decode(hidden, N, H, W)
+
+        point_hidden = self.point_decoder(hidden, xpos=pos)
+        conf_hidden = self.conf_decoder(hidden, xpos=pos)
+        camera_hidden = self.camera_decoder(hidden, xpos=pos)
+
+        with torch.amp.autocast(device_type='cuda', enabled=False):
+            # local points
+            point_hidden = point_hidden.float()
+            ret = self.point_head([point_hidden[:, self.patch_start_idx:]], (H, W)).reshape(B, N, H, W, -1)
+            xy, z = ret.split([2, 1], dim=-1)
+            z = torch.exp(z)
+            local_points = torch.cat([xy * z, z], dim=-1)
+
+            # confidence
+            conf_hidden = conf_hidden.float()
+            conf = self.conf_head([conf_hidden[:, self.patch_start_idx:]], (H, W)).reshape(B, N, H, W, -1)
+
+            # camera
+            camera_hidden = camera_hidden.float()
+            camera_poses = self.camera_head(camera_hidden[:, self.patch_start_idx:], patch_h, patch_w).reshape(B, N, 4, 4)
+
+            # unproject local points using camera poses
+            points = torch.einsum('bnij, bnhwj -> bnhwi', camera_poses, homogenize_points(local_points))[..., :3]
+
+        return dict(
+            points=points,
+            local_points=local_points,
+            conf=conf,
+            camera_poses=camera_poses,
+        )

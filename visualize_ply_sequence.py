@@ -247,8 +247,8 @@ def _render_sequence(
 
             ax.set_title(f"{title} — frame {idx}/{len(frames)} ({label})")
             fig.canvas.draw()
-            image = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-            image = image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+            image = np.frombuffer(fig.canvas.tostring_argb(), dtype=np.uint8)
+            image = image.reshape(fig.canvas.get_width_height()[::-1] + (4,))
             writer.append_data(image)
 
     plt.close(fig)
