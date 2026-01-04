@@ -220,7 +220,7 @@ class Pi3GuidedTI2V(nn.Module):
             decoder_hidden = torch.cat([register, tokens], dim=1)
             print("Shape of decoder hidden input", decoder_hidden.shape)
             pos = self.pi3.position_getter(
-                b * f, h, w, tokens.device).to(tokens.dtype)
+                b * f, h, w, tokens.device)
             pos = pos + 1
             pos_special = torch.zeros(
                 b * f,
