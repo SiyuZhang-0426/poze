@@ -169,23 +169,28 @@ class Pi3GuidedTI2V(nn.Module):
             recovered = pi3_latent
             if recovered is None:
                 return None
+            # frame-first layout indicates recovered latents shaped as (F, B, H * W, 2 * dec_embed_dim)
             frame_first = (
                 recovered.dim() == 4
                 and recovered.shape[-1] == 2 * self.pi3.dec_embed_dim
             )
             if frame_first:
                 f, b, hw, c = recovered.shape
-                recovered = recovered.permute(1, 0, 2, 3)  # (B, F, HW, C)
-                b, f, hw, c = recovered.shape
+                batch_first = recovered.permute(1, 0, 2, 3)  # (B, F, HW, C)
+                b, f, hw, c = batch_first.shape
                 patch_size = self.pi3.patch_size
                 if self._pi3_hw is not None:
                     h_pix, w_pix = self._pi3_hw
                     h = max(1, h_pix // patch_size)
                     w = max(1, w_pix // patch_size)
                 else:
-                    h = max(1, int(math.sqrt(hw)))
+                    h = 1
+                    for cand in range(int(math.sqrt(hw)), 0, -1):
+                        if hw % cand == 0:
+                            h = cand
+                            break
                     w = max(1, hw // h)
-                tokens = recovered.reshape(b * f, hw, c)
+                tokens = batch_first.reshape(b * f, hw, c)
             else:
                 if recovered.dim() == 4:
                     recovered = recovered.unsqueeze(0)
