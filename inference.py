@@ -173,17 +173,13 @@ def main():
         normalize=True,
         value_range=(-1, 1),
     )
-    caption = outputs.get("caption")
-    if caption:
-        caption_path = output_path.with_suffix(".txt")
-        caption_path.write_text(caption)
-        logging.info("Saved caption to %s", caption_path)
 
     if args.save_latents:
         args.save_latents.parent.mkdir(parents=True, exist_ok=True)
         latents_payload = {
             "rgb_latent": outputs.get("rgb_latent"),
             "pi3_latent": outputs.get("pi3_latent"),
+            "caption": outputs.get("caption"),
         }
         torch.save(latents_payload, args.save_latents)
         logging.info("Saved latents to %s", args.save_latents)
