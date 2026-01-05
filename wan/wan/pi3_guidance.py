@@ -267,15 +267,12 @@ class Pi3GuidedTI2V(nn.Module):
             conf = decoded.get("conf")
             has_conf = conf is not None and conf.dim() == 5
             if points is not None and points.dim() == 5:  # (B, F, H, W, 3)
-                points_list = [
-                    [points[bi, fi] for fi in range(points.shape[1])]
-                    for bi in range(points.shape[0])
-                ]
+                def _nested_frames_list(tensor: torch.Tensor):
+                    return [list(torch.unbind(batch_tensor, dim=0)) for batch_tensor in torch.unbind(tensor, dim=0)]
+
+                points_list = _nested_frames_list(points)
                 if has_conf:
-                    conf_list = [
-                        [conf[bi, fi] for fi in range(conf.shape[1])]
-                        for bi in range(conf.shape[0])
-                    ]
+                    conf_list = _nested_frames_list(conf)
                     decoded["conf_list"] = conf_list
                 decoded["points_list"] = points_list
             return decoded
