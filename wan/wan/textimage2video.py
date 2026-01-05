@@ -452,7 +452,11 @@ class WanTI2V:
         if has_video:
             try:
                 video_shape = tuple(getattr(videos[0], "shape", ()))
-                if len(video_shape) >= 2 and video_shape[1] > 0:
+                if len(video_shape) == 5 and video_shape[2] > 0:
+                    # Expected layout: (B, C, F, H, W)
+                    target_frames = video_shape[2]
+                elif len(video_shape) >= 2 and video_shape[1] > 0:
+                    # Layout without batch: (C, F, H, W)
                     target_frames = video_shape[1]
             except Exception:
                 target_frames = pi3_latent.shape[1]
@@ -1116,7 +1120,7 @@ class WanTI2V:
                     # target_frames = 1
                     pi3_decoded = self.recover_pi3_latents(
                         pi3_latent,
-                        (target_frames - 1, patch_h, patch_w),
+                        (target_frames, patch_h, patch_w),
                         flatten_to_frames=True,
                     )
                     if pi3_decoded is not None:

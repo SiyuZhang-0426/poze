@@ -23,6 +23,12 @@ def ensure_view_dim(frame_first_latent: torch.Tensor | None) -> torch.Tensor | N
 
 
 DEFAULT_FRAME_NUM = 81
+EXPECTED_POINT_TENSOR_DIMS = 5
+
+
+def _nested_frames_list(tensor: torch.Tensor):
+    """Convert (B, F, ...) tensor into nested [batch][frame] list for per-frame access."""
+    return [list(torch.unbind(batch_tensor, dim=0)) for batch_tensor in torch.unbind(tensor, dim=0)]
 
 
 class Pi3GuidedTI2V(nn.Module):
@@ -262,6 +268,16 @@ class Pi3GuidedTI2V(nn.Module):
                 b,
                 f,
             )
+            # Provide convenient per-frame lists for downstream consumers expecting a sequence of point clouds.
+            points = decoded.get("points")
+            conf = decoded.get("conf")
+            has_conf = conf is not None and conf.dim() == EXPECTED_POINT_TENSOR_DIMS
+            if points is not None and points.dim() == EXPECTED_POINT_TENSOR_DIMS:  # (B, F, H, W, 3)
+                points_list = _nested_frames_list(points)
+                if has_conf:
+                    conf_list = _nested_frames_list(conf)
+                    decoded["conf_list"] = conf_list
+                decoded["points_list"] = points_list
             return decoded
 
     def generate_with_3d(self, prompt: str, image, enable_grad: bool = False, decode_pi3: bool = False, **kwargs) -> Dict[str, Any]:
