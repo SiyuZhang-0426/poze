@@ -8,5 +8,6 @@ conda activate poze && \
 cd /mnt/petrelfs/zhangsiyu/4dgen/poze && \
 python ./pi3/example.py \
     --ckpt ./pi3_ckpt/model.safetensors \
-    --data_path ./zsydesk
+    --data_path ./zsydata \
+    --save_path ./outputs/result.ply
 "
