@@ -255,7 +255,7 @@ class Pi3GuidedTI2V(nn.Module):
             H_pix = h * self.pi3.patch_size
             W_pix = w * self.pi3.patch_size
             decoded = self.pi3._decode_tokens(
-                decoder_hidden_flat,
+                decoder_hidden,
                 pos,
                 H_pix,
                 W_pix,
