@@ -173,6 +173,11 @@ def main():
         normalize=True,
         value_range=(-1, 1),
     )
+    caption = outputs.get("caption")
+    if caption:
+        caption_path = output_path.with_suffix(".txt")
+        caption_path.write_text(caption)
+        logging.info("Saved caption to %s", caption_path)
 
     if args.save_latents:
         args.save_latents.parent.mkdir(parents=True, exist_ok=True)
