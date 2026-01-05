@@ -212,25 +212,34 @@ class Pi3GuidedTI2V(nn.Module):
                     )
                     # Token counts are small; the descending scan returns the largest divisor <= sqrt(hw) to keep aspect ratio reasonable.
                     w = hw // h
-                tokens = batch_first.reshape(b * f, hw, c)
+                tokens = batch_first.reshape(b, f, hw, c)
             else:
                 if recovered.dim() == 4:
                     recovered = recovered.unsqueeze(0)
                 b, c, f, h, w = recovered.shape
-                tokens = recovered.permute(0, 2, 3, 4, 1).reshape(b * f, h * w, c)
+                tokens = recovered.permute(0, 2, 3, 4, 1).reshape(b, f, h * w, c)
             
             print("Shape of tokens after operation", tokens.shape)
             register = torch.cat(
                 [self.pi3.register_token, self.pi3.register_token],
                 dim=-1,
             ).to(tokens.device, tokens.dtype)
+            # Preserve batch/view and frame axes so downstream logging can report per-view shapes before flattening.
             register = register.repeat(b, f, 1, 1).reshape(
-                b * f,
+                b,
+                f,
                 self.pi3.patch_start_idx,
                 tokens.shape[-1],
             )
-            decoder_hidden = torch.cat([register, tokens], dim=1)
-            print("Shape of decoder hidden input", decoder_hidden.shape)
+            decoder_hidden = torch.cat([register, tokens], dim=2)
+            tokens_len, embed_dim = decoder_hidden.shape[2], decoder_hidden.shape[3]
+            decoder_hidden_flat = decoder_hidden.reshape(b * f, tokens_len, embed_dim)
+            print(
+                "Decoder hidden shapes: batch-first (B,F,tokens,C), frame-first (F,B,tokens,C), flattened (B*F,tokens,C)",
+                decoder_hidden.shape,
+                decoder_hidden.permute(1, 0, 2, 3).shape,
+                decoder_hidden_flat.shape,
+            )
             pos = self.pi3.position_getter(
                 b * f, h, w, tokens.device)
             pos = pos + 1
@@ -246,7 +255,7 @@ class Pi3GuidedTI2V(nn.Module):
             H_pix = h * self.pi3.patch_size
             W_pix = w * self.pi3.patch_size
             decoded = self.pi3._decode_tokens(
-                decoder_hidden,
+                decoder_hidden_flat,
                 pos,
                 H_pix,
                 W_pix,
