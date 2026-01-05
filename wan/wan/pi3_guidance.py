@@ -224,6 +224,7 @@ class Pi3GuidedTI2V(nn.Module):
                 [self.pi3.register_token, self.pi3.register_token],
                 dim=-1,
             ).to(tokens.device, tokens.dtype)
+            # Preserve batch/view and frame axes so downstream logging can report per-view shapes before flattening.
             register = register.repeat(b, f, 1, 1).reshape(
                 b,
                 f,
@@ -234,7 +235,7 @@ class Pi3GuidedTI2V(nn.Module):
             tokens_len, embed_dim = decoder_hidden.shape[2], decoder_hidden.shape[3]
             decoder_hidden_flat = decoder_hidden.reshape(b * f, tokens_len, embed_dim)
             print(
-                "Decoder hidden shapes (B, F, tokens, C), frame-first, flattened",
+                "Decoder hidden shapes: batch-first (B,F,tokens,C), frame-first (F,B,tokens,C), flattened (B*F,tokens,C)",
                 decoder_hidden.shape,
                 decoder_hidden.permute(1, 0, 2, 3).shape,
                 decoder_hidden_flat.shape,
