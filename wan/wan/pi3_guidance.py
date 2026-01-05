@@ -212,12 +212,12 @@ class Pi3GuidedTI2V(nn.Module):
                     )
                     # Token counts are small; the descending scan returns the largest divisor <= sqrt(hw) to keep aspect ratio reasonable.
                     w = hw // h
-                tokens = batch_first.reshape(b * f, hw, c)
+                tokens = batch_first.reshape(b, f, hw, c)
             else:
                 if recovered.dim() == 4:
                     recovered = recovered.unsqueeze(0)
                 b, c, f, h, w = recovered.shape
-                tokens = recovered.permute(0, 2, 3, 4, 1).reshape(b * f, h * w, c)
+                tokens = recovered.permute(0, 2, 3, 4, 1).reshape(b, f, h * w, c)
             
             print("Shape of tokens after operation", tokens.shape)
             register = torch.cat(
@@ -225,12 +225,15 @@ class Pi3GuidedTI2V(nn.Module):
                 dim=-1,
             ).to(tokens.device, tokens.dtype)
             register = register.repeat(b, f, 1, 1).reshape(
-                b * f,
+                b,
+                f,
                 self.pi3.patch_start_idx,
                 tokens.shape[-1],
             )
-            decoder_hidden = torch.cat([register, tokens], dim=1)
-            print("Shape of decoder hidden input", decoder_hidden.shape)
+            decoder_hidden = torch.cat([register, tokens], dim=2)
+            decoder_hidden_fv = decoder_hidden.permute(1, 0, 2, 3)
+            print("Shape of decoder hidden input", decoder_hidden_fv.shape)
+            decoder_hidden = decoder_hidden.reshape(b * f, decoder_hidden.shape[2], decoder_hidden.shape[3])
             pos = self.pi3.position_getter(
                 b * f, h, w, tokens.device)
             pos = pos + 1
