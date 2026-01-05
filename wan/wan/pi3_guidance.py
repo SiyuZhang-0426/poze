@@ -234,7 +234,8 @@ class Pi3GuidedTI2V(nn.Module):
             tokens_len, embed_dim = decoder_hidden.shape[2], decoder_hidden.shape[3]
             decoder_hidden_flat = decoder_hidden.reshape(b * f, tokens_len, embed_dim)
             print(
-                "Shape of decoder hidden input (F, V, tokens, C) and flattened",
+                "Decoder hidden shapes (B, F, tokens, C), frame-first, flattened",
+                decoder_hidden.shape,
                 decoder_hidden.permute(1, 0, 2, 3).shape,
                 decoder_hidden_flat.shape,
             )
