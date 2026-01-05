@@ -267,13 +267,15 @@ class Pi3GuidedTI2V(nn.Module):
             conf = decoded.get("conf")
             has_conf = conf is not None and conf.dim() == 5
             if points is not None and points.dim() == 5:  # (B, F, H, W, 3)
-                points_list = []
-                conf_list = []
-                for bi in range(points.shape[0]):
-                    for fi in range(points.shape[1]):
-                        points_list.append(points[bi, fi])
-                        if has_conf:
-                            conf_list.append(conf[bi, fi])
+                points_list = [
+                    [points[bi, fi] for fi in range(points.shape[1])]
+                    for bi in range(points.shape[0])
+                ]
+                if has_conf:
+                    conf_list = [
+                        [conf[bi, fi] for fi in range(conf.shape[1])]
+                        for bi in range(conf.shape[0])
+                    ]
                 decoded["points_list"] = points_list
                 if has_conf:
                     decoded["conf_list"] = conf_list
