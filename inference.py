@@ -179,6 +179,7 @@ def main():
         latents_payload = {
             "rgb_latent": outputs.get("rgb_latent"),
             "pi3_latent": outputs.get("pi3_latent"),
+            "caption": outputs.get("caption"),
         }
         torch.save(latents_payload, args.save_latents)
         logging.info("Saved latents to %s", args.save_latents)

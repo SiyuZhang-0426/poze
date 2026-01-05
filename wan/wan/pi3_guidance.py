@@ -261,7 +261,7 @@ class Pi3GuidedTI2V(nn.Module):
             H_pix = h * self.pi3.patch_size
             W_pix = w * self.pi3.patch_size
             decoded = self.pi3._decode_tokens(
-                decoder_hidden,
+                decoder_hidden_flat,
                 pos,
                 H_pix,
                 W_pix,
@@ -321,6 +321,7 @@ class Pi3GuidedTI2V(nn.Module):
             "rgb_latent": rgb_latent,
             "pi3_latent": pi3_latent,
             "pi3_preds": pi3_preds,
+            "caption": prompt,
         }
 
     def training_step(
