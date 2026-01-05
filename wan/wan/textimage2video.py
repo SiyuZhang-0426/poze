@@ -1116,7 +1116,7 @@ class WanTI2V:
                     # target_frames = 1
                     pi3_decoded = self.recover_pi3_latents(
                         pi3_latent,
-                        (target_frames - 1, patch_h, patch_w),
+                        (target_frames, patch_h, patch_w),
                         flatten_to_frames=True,
                     )
                     if pi3_decoded is not None:
