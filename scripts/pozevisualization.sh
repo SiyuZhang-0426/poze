@@ -7,7 +7,7 @@ source ~/.bashrc && \
 conda activate poze && \
 cd /mnt/petrelfs/zhangsiyu/4dgen/poze && \
 python visualize_ply_sequence.py \
-    --input ./outputs/desk.ply \
+    --input ./outputs/snowball_fc_2.ply \
     --save ./outputs/snowball_preview.mp4 \
     --max-points 60000 \
     --fps 6 \
