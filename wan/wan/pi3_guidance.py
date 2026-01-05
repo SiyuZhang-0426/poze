@@ -268,6 +268,7 @@ class Pi3GuidedTI2V(nn.Module):
             has_conf = conf is not None and conf.dim() == 5
             if points is not None and points.dim() == 5:  # (B, F, H, W, 3)
                 def _nested_frames_list(tensor: torch.Tensor):
+                    """Convert (B, F, ...) tensor into nested [batch][frame] list for per-frame access."""
                     return [list(torch.unbind(batch_tensor, dim=0)) for batch_tensor in torch.unbind(tensor, dim=0)]
 
                 points_list = _nested_frames_list(points)
