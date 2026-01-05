@@ -262,6 +262,20 @@ class Pi3GuidedTI2V(nn.Module):
                 b,
                 f,
             )
+            # Provide convenient per-frame lists for downstream consumers expecting a sequence of point clouds.
+            points = decoded.get("points")
+            conf = decoded.get("conf")
+            if points is not None and points.dim() == 5:  # (B, F, H, W, 3)
+                points_list = []
+                conf_list = []
+                for bi in range(points.shape[0]):
+                    for fi in range(points.shape[1]):
+                        points_list.append(points[bi, fi])
+                        if conf is not None and conf.dim() == 5:
+                            conf_list.append(conf[bi, fi])
+                decoded["points_list"] = points_list
+                if conf is not None and conf.dim() == 5:
+                    decoded["conf_list"] = conf_list
             return decoded
 
     def generate_with_3d(self, prompt: str, image, enable_grad: bool = False, decode_pi3: bool = False, **kwargs) -> Dict[str, Any]:
