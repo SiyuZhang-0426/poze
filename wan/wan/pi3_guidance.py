@@ -230,27 +230,18 @@ class Pi3GuidedTI2V(nn.Module):
                 [self.pi3.register_token, self.pi3.register_token],
                 dim=-1,
             ).to(tokens.device, tokens.dtype)
-            # Preserve batch/view and frame axes so downstream logging can report per-view shapes before flattening.
             register = register.repeat(b, f, 1, 1).reshape(
                 b,
                 f,
                 self.pi3.patch_start_idx,
                 tokens.shape[-1],
             )
-            decoder_hidden = torch.cat([register, tokens], dim=2)
-            tokens_len, embed_dim = decoder_hidden.shape[2], decoder_hidden.shape[3]
-            decoder_hidden_flat = decoder_hidden.reshape(b * f, tokens_len, embed_dim)
-            print(
-                "Decoder hidden shapes: batch-first (B,F,tokens,C), frame-first (F,B,tokens,C), flattened (B*F,tokens,C)",
-                decoder_hidden.shape,
-                decoder_hidden.permute(1, 0, 2, 3).shape,
-                decoder_hidden_flat.shape,
-            )
-            pos = self.pi3.position_getter(
-                b * f, h, w, tokens.device)
+            tokens_len = register.shape[2] + tokens.shape[2]
+            embed_dim = tokens.shape[3]
+            pos = self.pi3.position_getter(b, h, w, tokens.device)
             pos = pos + 1
             pos_special = torch.zeros(
-                b * f,
+                b,
                 self.pi3.patch_start_idx,
                 2,
                 device=tokens.device,
@@ -260,14 +251,35 @@ class Pi3GuidedTI2V(nn.Module):
 
             H_pix = h * self.pi3.patch_size
             W_pix = w * self.pi3.patch_size
-            decoded = self.pi3._decode_tokens(
-                decoder_hidden_flat,
-                pos,
-                H_pix,
-                W_pix,
-                b,
-                f,
-            )
+            decoded_frames: Dict[str, List[torch.Tensor]] = {}
+            for frame_idx in range(f):
+                frame_register = register[:, frame_idx : frame_idx + 1]
+                frame_tokens = tokens[:, frame_idx : frame_idx + 1]
+                decoder_hidden = torch.cat([frame_register, frame_tokens], dim=2)
+                decoder_hidden_flat = decoder_hidden.reshape(b, tokens_len, embed_dim)
+                print(
+                    "Decoder hidden shapes per frame: (B,1,tokens,C) and flattened (B,tokens,C)",
+                    decoder_hidden.shape,
+                    decoder_hidden_flat.shape,
+                )
+                decoded_frame = self.pi3._decode_tokens(
+                    decoder_hidden_flat,
+                    pos,
+                    H_pix,
+                    W_pix,
+                    b,
+                    1,
+                )
+                for key, value in decoded_frame.items():
+                    if key not in decoded_frames:
+                        decoded_frames[key] = []
+                    decoded_frames[key].append(value)
+
+            decoded = {
+                key: torch.cat(value_list, dim=1)
+                for key, value_list in decoded_frames.items()
+                if len(value_list) > 0
+            }
             # Provide convenient per-frame lists for downstream consumers expecting a sequence of point clouds.
             points = decoded.get("points")
             conf = decoded.get("conf")
