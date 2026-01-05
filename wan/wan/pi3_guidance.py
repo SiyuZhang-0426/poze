@@ -9,7 +9,7 @@ import torchvision.transforms.functional as TF
 
 from pi3.models.pi3 import Pi3
 from pi3.utils.basic import load_images_as_tensor
-from .textimage2video import WanTI2V
+from .textimage2video import WanTI2V, ensure_view_dim
 
 
 DEFAULT_FRAME_NUM = 81
@@ -170,6 +170,7 @@ class Pi3GuidedTI2V(nn.Module):
             recovered = pi3_latent
             if recovered is None:
                 return None
+            recovered = ensure_view_dim(recovered)
             # cached Pi3 shape stores register + spatial tokens; subtract registers to recover patch_h * patch_w.
             expected_hw = (
                 None

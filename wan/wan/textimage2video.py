@@ -32,6 +32,16 @@ from .utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from .utils.utils import best_output_size, masks_like
 
 
+def ensure_view_dim(frame_first_latent: torch.Tensor | None) -> torch.Tensor | None:
+    """
+    Guarantee an explicit view dimension (V) for frame-first Pi3 latents.
+    Converts (F, HW, C) to (F, 1, HW, C) when the view axis is missing.
+    """
+    if frame_first_latent is not None and frame_first_latent.dim() == 3:
+        return frame_first_latent.unsqueeze(1)
+    return frame_first_latent
+
+
 class WanTI2V:
 
     def __init__(
@@ -415,7 +425,16 @@ class WanTI2V:
             if len(pi3_latent) == 0:
                 return None
             pi3_latent = pi3_latent[0]
-        return self._recover_pi3_latents(pi3_latent, target_size, flatten_to_frames=flatten_to_frames)
+        recovered = self._recover_pi3_latents(
+            pi3_latent,
+            target_size,
+            flatten_to_frames=flatten_to_frames,
+        )
+        if flatten_to_frames:
+            # Keep an explicit singleton view dimension so downstream Pi3 decoding
+            # treats the leading axis as frames instead of views.
+            recovered = ensure_view_dim(recovered)
+        return recovered
 
     def _pi3_recovery_dims(
         self,

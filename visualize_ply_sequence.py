@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import argparse
 import glob
+import re
 from pathlib import Path
-from typing import List, Sequence, Tuple
+from typing import List, Sequence, Tuple, Union
 
 import numpy as np
 from plyfile import PlyData
@@ -27,6 +28,11 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import imageio  # noqa: E402
+
+
+# Shared patterns keep _natural_key split/fullmatch logic consistent for numeric filenames.
+_INT_PATTERN = r"[+-]?\d+"
+_NUMERIC_PATTERN = r"[+-]?\d+(?:\.\d+)?"
 
 
 PointCloud = Tuple[np.ndarray, np.ndarray | None, str]
@@ -109,6 +115,21 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _natural_key(path: Path) -> Tuple[Union[int, float, str], ...]:
+    parts = re.split(f"({_NUMERIC_PATTERN})", path.stem)
+    key: List[Union[int, float, str]] = []
+    for part in parts:
+        if not part:
+            continue
+        if re.fullmatch(_INT_PATTERN, part):
+            key.append(int(part))
+        elif re.fullmatch(_NUMERIC_PATTERN, part) and not re.fullmatch(_INT_PATTERN, part):
+            key.append(float(part))
+        else:
+            key.append(part.lower())
+    return tuple(key)
+
+
 def _expand_sources(source: str, stride: int) -> List[Path]:
     pattern_chars = ("*", "?", "[")
     if any(char in source for char in pattern_chars):
@@ -121,7 +142,7 @@ def _expand_sources(source: str, stride: int) -> List[Path]:
             paths = [src_path]
 
     stride = max(stride, 1)
-    paths = sorted(paths)[::stride]
+    paths = sorted(paths, key=_natural_key)[::stride]
     if not paths:
         raise FileNotFoundError(f"No PLY files found for {source}")
     return paths
