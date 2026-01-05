@@ -115,7 +115,7 @@ def _parse_args() -> argparse.Namespace:
         "--save-pi3",
         type=Path,
         default=None,
-        help="Optional path to save a Pi3 point cloud (.ply)."
+        help="Optional directory (or .ply path for backward compatibility) to save per-frame Pi3 point clouds."
     )
     return parser.parse_args()
 
@@ -185,35 +185,63 @@ def main():
 
     if args.save_pi3:
         pi3_out = outputs.get("pi3_preds")
-        args.save_pi3.parent.mkdir(parents=True, exist_ok=True)
+        save_dir = args.save_pi3
+        if save_dir.suffix.lower() == ".ply":
+            save_dir = save_dir.parent
+        save_dir.mkdir(parents=True, exist_ok=True)
         if pi3_out is None:
             logging.warning("Pi3 predictions unavailable; skipping save_pi3.")
         else:
             points = pi3_out.get("points")
             conf = pi3_out.get("conf")
-            ply_path = args.save_pi3
-            if ply_path.suffix.lower() != ".ply":
-                ply_path = ply_path.with_suffix(".ply")
             if points is None:
                 logging.warning("Pi3 predictions missing points; skipped PLY export.")
             else:
-                # Save the first batch element by default.
-                points_to_save = points[0] if points.dim() > 1 else points
-                if conf is not None:
-                    conf_map = conf[0].squeeze(-1)
-                    expected_mask_shape = points_to_save.shape[:-1]
-                    if conf_map.shape[: len(expected_mask_shape)] == expected_mask_shape:
-                        conf_mask = conf_map > PI3_CONF_THRESHOLD
-                        if conf_mask.any():
-                            points_to_save = points_to_save[conf_mask]
-                    else:
-                        logging.warning(
-                            "Pi3 confidence shape %s does not match points shape %s; skipping confidence filtering.",
-                            tuple(conf_map.shape),
-                            tuple(expected_mask_shape),
-                        )
-                write_ply(points_to_save, path=str(ply_path))
-                logging.info("Saved Pi3 point cloud to %s", ply_path)
+                base_name = Path(args.image).stem or "frame"
+                points_tensor = points
+                conf_tensor = conf
+                if points_tensor.dim() == 4:
+                    points_tensor = points_tensor.unsqueeze(0)
+                if conf_tensor is not None and conf_tensor.dim() == 4:
+                    conf_tensor = conf_tensor.unsqueeze(0)
+                if points_tensor.dim() != 5:
+                    logging.warning(
+                        "Unexpected Pi3 points shape %s; expected (B, F, H, W, 3). Skipped PLY export.",
+                        tuple(points_tensor.shape),
+                    )
+                else:
+                    batch_size, frame_count = points_tensor.shape[:2]
+                    for b in range(batch_size):
+                        batch_prefix = base_name if batch_size == 1 else f"{base_name}_b{b}"
+                        for f_idx in range(frame_count):
+                            frame_points = points_tensor[b, f_idx]
+                            frame_conf = None
+                            if conf_tensor is not None and conf_tensor.dim() >= 4:
+                                if conf_tensor.shape[0] == batch_size and conf_tensor.shape[1] == frame_count:
+                                    frame_conf = conf_tensor[b, f_idx]
+                            points_to_save = frame_points
+                            if frame_conf is not None:
+                                conf_map = frame_conf.squeeze(-1)
+                                expected_mask_shape = points_to_save.shape[:-1]
+                                if conf_map.shape[: len(expected_mask_shape)] == expected_mask_shape:
+                                    conf_mask = conf_map > PI3_CONF_THRESHOLD
+                                    if conf_mask.any():
+                                        points_to_save = points_to_save[conf_mask]
+                                else:
+                                    logging.warning(
+                                        "Pi3 confidence shape %s does not match points shape %s; skipping confidence filtering for frame %d.",
+                                        tuple(conf_map.shape),
+                                        tuple(expected_mask_shape),
+                                        f_idx,
+                                    )
+                            ply_name = f"{batch_prefix}_{f_idx:04d}.ply"
+                            ply_path = save_dir / ply_name
+                            write_ply(points_to_save, path=str(ply_path))
+                    logging.info(
+                        "Saved %d Pi3 point cloud frame(s) to %s",
+                        batch_size * frame_count,
+                        save_dir,
+                    )
 
     logging.info("Done.")
 

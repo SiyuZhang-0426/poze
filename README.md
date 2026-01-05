@@ -56,7 +56,7 @@ python inference.py \
 ```
 `inference.py` saves the output as an mp4. Helpful flags:
 - `--save-latents`: dump latents.
-- `--save-pi3`: save Pi3 decodes.
+- `--save-pi3`: directory (or legacy `.ply` path) to save Pi3 decodes as per-frame PLYs named `<image_stem>_0000.ply`, `<image_stem>_0001.ply`, etc.
 - `--frame-num`: override the config’s default video length.
 - `--offload-model`: optional; pass `true` or `false` (common boolean strings like `yes/no/1/0` also work) to control Wan CPU offloading. If omitted, it defaults to true.
 - `--wan-config`: choose another Wan config key (defaults to `ti2v-5B`).
@@ -74,7 +74,7 @@ python inference.py \
   --frame-num 32 \
   --offload-model true \
   --save-latents outputs/robot_latents.pt \
-  --save-pi3 outputs/robot_pi3.pt \
+  --save-pi3 outputs/robot_pi3_points \
   --output outputs/robot.mp4
 ```
 
