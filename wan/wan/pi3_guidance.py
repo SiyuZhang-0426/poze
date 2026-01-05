@@ -231,8 +231,7 @@ class Pi3GuidedTI2V(nn.Module):
                 tokens.shape[-1],
             )
             decoder_hidden = torch.cat([register, tokens], dim=2)
-            decoder_hidden_fv = decoder_hidden.permute(1, 0, 2, 3)
-            print("Shape of decoder hidden input", decoder_hidden_fv.shape)
+            print("Shape of decoder hidden input", decoder_hidden.permute(1, 0, 2, 3).shape)
             tokens_len, embed_dim = decoder_hidden.shape[2], decoder_hidden.shape[3]
             decoder_hidden_flat = decoder_hidden.reshape(b * f, tokens_len, embed_dim)
             pos = self.pi3.position_getter(
