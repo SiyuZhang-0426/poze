@@ -9,7 +9,17 @@ import torchvision.transforms.functional as TF
 
 from pi3.models.pi3 import Pi3
 from pi3.utils.basic import load_images_as_tensor
-from .textimage2video import WanTI2V, ensure_view_dim
+from .textimage2video import WanTI2V
+
+
+def ensure_view_dim(frame_first_latent: torch.Tensor | None) -> torch.Tensor | None:
+    """
+    Guarantee an explicit view dimension (V) for frame-first Pi3 latents.
+    Converts (F, HW, C) to (F, 1, HW, C) when the view axis is missing.
+    """
+    if frame_first_latent is not None and frame_first_latent.dim() == 3:
+        return frame_first_latent.unsqueeze(1)
+    return frame_first_latent
 
 
 DEFAULT_FRAME_NUM = 81
