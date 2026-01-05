@@ -181,6 +181,7 @@ class Pi3GuidedTI2V(nn.Module):
             if recovered is None:
                 return None
             recovered = ensure_view_dim(recovered)
+            print("Shape of recovered pi3 latents after ensure_view_dim", recovered.shape)
             # cached Pi3 shape stores register + spatial tokens; subtract registers to recover patch_h * patch_w.
             expected_hw = (
                 None
