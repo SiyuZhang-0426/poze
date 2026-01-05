@@ -276,9 +276,8 @@ class Pi3GuidedTI2V(nn.Module):
                         [conf[bi, fi] for fi in range(conf.shape[1])]
                         for bi in range(conf.shape[0])
                     ]
-                decoded["points_list"] = points_list
-                if has_conf:
                     decoded["conf_list"] = conf_list
+                decoded["points_list"] = points_list
             return decoded
 
     def generate_with_3d(self, prompt: str, image, enable_grad: bool = False, decode_pi3: bool = False, **kwargs) -> Dict[str, Any]:
