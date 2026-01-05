@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import re
 from pathlib import Path
 from typing import List, Sequence, Tuple
 
@@ -109,6 +110,13 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _natural_key(path: Path) -> Tuple:
+    return tuple(
+        int(part) if part.isdigit() else part.lower()
+        for part in re.split(r"(\d+)", path.stem)
+    )
+
+
 def _expand_sources(source: str, stride: int) -> List[Path]:
     pattern_chars = ("*", "?", "[")
     if any(char in source for char in pattern_chars):
@@ -121,7 +129,7 @@ def _expand_sources(source: str, stride: int) -> List[Path]:
             paths = [src_path]
 
     stride = max(stride, 1)
-    paths = sorted(paths)[::stride]
+    paths = sorted(paths, key=_natural_key)[::stride]
     if not paths:
         raise FileNotFoundError(f"No PLY files found for {source}")
     return paths

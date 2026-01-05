@@ -415,7 +415,14 @@ class WanTI2V:
             if len(pi3_latent) == 0:
                 return None
             pi3_latent = pi3_latent[0]
-        return self._recover_pi3_latents(pi3_latent, target_size, flatten_to_frames=flatten_to_frames)
+        recovered = self._recover_pi3_latents(
+            pi3_latent,
+            target_size,
+            flatten_to_frames=flatten_to_frames,
+        )
+        if flatten_to_frames and recovered is not None and recovered.dim() == 3:
+            recovered = recovered.unsqueeze(1)
+        return recovered
 
     def _pi3_recovery_dims(
         self,

@@ -170,6 +170,9 @@ class Pi3GuidedTI2V(nn.Module):
             recovered = pi3_latent
             if recovered is None:
                 return None
+            if recovered.dim() == 3:
+                # Pi3 expects an explicit view dimension; default to a single view when absent.
+                recovered = recovered.unsqueeze(1)
             # cached Pi3 shape stores register + spatial tokens; subtract registers to recover patch_h * patch_w.
             expected_hw = (
                 None
