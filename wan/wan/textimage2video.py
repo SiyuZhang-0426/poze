@@ -7,7 +7,7 @@ import random
 import sys
 from contextlib import contextmanager, nullcontext
 from functools import partial
-from typing import List, Optional, Union
+from typing import List, Optional, Tuple, Union
 
 import torch
 import torch.cuda.amp as amp
@@ -164,7 +164,7 @@ class WanTI2V:
     def recover_pi3_latents(
         self,
         pi3_latent: Union[torch.Tensor, List[torch.Tensor], None],
-        target_size: tuple[int, int, int],
+        target_size: Tuple[int, int, int],
         flatten_to_frames: bool = False,
     ) -> Optional[torch.Tensor]:
         return recover_pi3_latents(

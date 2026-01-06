@@ -244,7 +244,7 @@ def prepare_pi3_condition(
 
 def recover_pi3_latents(
     pi3_latent: Union[torch.Tensor, List[torch.Tensor], None],
-    target_size: tuple[int, int, int],
+    target_size: Tuple[int, int, int],
     *,
     recover_adapter=None,
     flatten_to_frames: bool = False,
@@ -324,7 +324,7 @@ def pi3_recovery_dims(
     videos,
     *,
     default_patch_size: Optional[int],
-) -> tuple[int, int, int]:
+) -> Tuple[int, int, int]:
     patch_size = video_condition.get("patch_size", default_patch_size)
     patch_size = max(patch_size or 1, 1)
     hw = video_condition.get("hw")
