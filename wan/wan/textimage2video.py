@@ -7,6 +7,7 @@ import random
 import sys
 from contextlib import contextmanager, nullcontext
 from functools import partial
+from typing import List, Optional, Union
 
 import torch
 import torch.cuda.amp as amp
@@ -149,8 +150,8 @@ class WanTI2V:
     def configure_pi3_adapters(
         self,
         pi3_channel_dim: int,
-        patch_size: int | None = None,
-        patch_start_idx: int | None = None,
+        patch_size: Optional[int] = None,
+        patch_start_idx: Optional[int] = None,
     ) -> None:
         self.latent_adapter, self.pi3_recover_adapter = create_pi3_adapters(
             pi3_channel_dim, self.vae.model.z_dim, self.device
@@ -162,10 +163,10 @@ class WanTI2V:
 
     def recover_pi3_latents(
         self,
-        pi3_latent: torch.Tensor | list[torch.Tensor] | None,
+        pi3_latent: Union[torch.Tensor, List[torch.Tensor], None],
         target_size: tuple[int, int, int],
         flatten_to_frames: bool = False,
-    ) -> torch.Tensor | None:
+    ) -> Optional[torch.Tensor]:
         return recover_pi3_latents(
             pi3_latent,
             target_size,
