@@ -163,7 +163,7 @@ class WanTI2V:
 
     def recover_pi3_latents(
         self,
-        pi3_latent: Union[torch.Tensor, List[torch.Tensor], None],
+        pi3_latent: Optional[Union[torch.Tensor, List[torch.Tensor]]],
         target_size: Tuple[int, int, int],
         flatten_to_frames: bool = False,
     ) -> Optional[torch.Tensor]:
