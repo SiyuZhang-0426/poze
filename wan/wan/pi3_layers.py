@@ -1,7 +1,7 @@
 import logging
 import math
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -9,6 +9,7 @@ import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 
 from pi3.utils.basic import load_images_as_tensor
+from .utils.pipeline_utils import build_pi3_latent_volume, prepare_pi3_condition, recover_pi3_latents
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,61 @@ class Pi3RecoverLayer(nn.Module):
         if self._pi3_shape is None or self.pi3 is None:
             return None
         return max(1, self._pi3_shape[1] - self.pi3.patch_start_idx)
+
+    def build_latent_volume(
+        self,
+        latents: Dict[str, Any],
+        *,
+        default_patch_size: Optional[int] = None,
+        default_patch_start_idx: Optional[int] = None,
+    ) -> torch.Tensor:
+        patch_size = latents.get("patch_size", default_patch_size or getattr(self.pi3, "patch_size", None))
+        patch_start_idx = latents.get("patch_start_idx", default_patch_start_idx or getattr(self.pi3, "patch_start_idx", None))
+        return build_pi3_latent_volume(
+            latents,
+            default_patch_size=patch_size,
+            default_patch_start_idx=patch_start_idx,
+        )
+
+    def prepare_condition(
+        self,
+        video_condition: Any,
+        cond_latent: torch.Tensor,
+        *,
+        device: torch.device,
+        latent_adapter: Optional[torch.nn.Module],
+        use_pi3_condition: bool,
+        concat_method: str,
+        default_patch_size: Optional[int] = None,
+        default_patch_start_idx: Optional[int] = None,
+    ) -> Tuple[Optional[torch.Tensor], int]:
+        patch_size = default_patch_size or getattr(self.pi3, "patch_size", None)
+        patch_start_idx = default_patch_start_idx or getattr(self.pi3, "patch_start_idx", None)
+        return prepare_pi3_condition(
+            video_condition,
+            cond_latent,
+            device=device,
+            latent_adapter=latent_adapter,
+            use_pi3_condition=use_pi3_condition,
+            concat_method=concat_method,
+            default_patch_size=patch_size,
+            default_patch_start_idx=patch_start_idx,
+        )
+
+    def recover_latents(
+        self,
+        pi3_latent: Optional[Union[torch.Tensor, List[torch.Tensor]]],
+        target_size: Tuple[int, int, int],
+        *,
+        recover_adapter: Optional[torch.nn.Module] = None,
+        flatten_to_frames: bool = False,
+    ) -> Optional[torch.Tensor]:
+        return recover_pi3_latents(
+            pi3_latent,
+            target_size,
+            recover_adapter=recover_adapter,
+            flatten_to_frames=flatten_to_frames,
+        )
 
     def decode_latent_sequence(self, pi3_latent: Optional[torch.Tensor]) -> Optional[Dict[str, Any]]:
         if self.pi3 is None or pi3_latent is None:
