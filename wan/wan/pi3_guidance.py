@@ -71,7 +71,7 @@ class Pi3GuidedTI2V(nn.Module):
             )
 
     def generate_with_3d(self, prompt: str, image, enable_grad: bool = False, decode_pi3: bool = False, **kwargs) -> Dict[str, Any]:
-        imgs, pil_image = self.stitching_layer.prepare_image_inputs(image, self.use_pi3)
+        imgs, pil_image = self.stitching_layer(image, self.use_pi3)
         video_condition = None
         # Reset per-call cache; used only to decode outputs from this generation.
         if self.use_pi3:
@@ -105,7 +105,7 @@ class Pi3GuidedTI2V(nn.Module):
             pi3_latent = None
         pi3_preds = None
         if decode_pi3 and pi3_latent is not None:
-            pi3_preds = self.recover_layer.decode_latent_sequence(pi3_latent)
+            pi3_preds = self.recover_layer(pi3_latent)
         return {
             "video": video,
             "rgb_latent": rgb_latent,
