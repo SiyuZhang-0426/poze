@@ -5,20 +5,18 @@ import math
 import os
 import random
 import sys
-import types
 from contextlib import contextmanager, nullcontext
 from functools import partial
+from typing import List, Optional, Tuple, Union
 
 import torch
 import torch.cuda.amp as amp
 import torch.distributed as dist
-import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 from PIL import Image
 from tqdm import tqdm
 
 from .distributed.fsdp import shard_model
-from .distributed.sequence_parallel import sp_attn_forward, sp_dit_forward
 from .distributed.util import get_world_size
 from .modules.model import WanModel
 from .modules.t5 import T5EncoderModel
@@ -29,6 +27,14 @@ from .utils.fm_solvers import (
     retrieve_timesteps,
 )
 from .utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
+from .utils.pipeline_utils import (
+    align_patch_embedding_for_conditioning,
+    configure_model,
+    create_pi3_adapters,
+    pi3_recovery_dims,
+    prepare_pi3_condition,
+    recover_pi3_latents,
+)
 from .utils.utils import best_output_size, masks_like
 
 
@@ -117,14 +123,22 @@ class WanTI2V:
 
         logging.info(f"Creating WanModel from {checkpoint_dir}")
         self.model = WanModel.from_pretrained(checkpoint_dir)
-        self.model = self._configure_model(
+        self.model = configure_model(
             model=self.model,
             use_sp=use_sp,
             dit_fsdp=dit_fsdp,
             shard_fn=shard_fn,
             convert_model_dtype=convert_model_dtype,
+            init_on_cpu=self.init_on_cpu,
+            device=self.device,
+            param_dtype=self.param_dtype,
             trainable=trainable)
-        self._align_patch_embedding_for_conditioning()
+        align_patch_embedding_for_conditioning(
+            self.model,
+            self.vae.model.z_dim,
+            self.use_pi3_condition,
+            self.concat_method,
+        )
 
         if use_sp:
             self.sp_size = get_world_size()
@@ -133,380 +147,32 @@ class WanTI2V:
 
         self.sample_neg_prompt = config.sample_neg_prompt
 
-    def _align_patch_embedding_for_conditioning(self) -> None:
-        """
-        When PI3 conditioning is enabled, ensure the patch embedding expects concatenated
-        RGB and conditioning channels by seeding the extra slice with the pretrained RGB weights.
-        """
-        if not self.use_pi3_condition or self.concat_method != "channel":
-            return
-
-        patch_embedding = getattr(self.model, "patch_embedding", None)
-        if patch_embedding is None:
-            return
-
-        base_channels = self.vae.model.z_dim
-        expected_channels = base_channels * 2
-        weight = getattr(patch_embedding, "weight", None)
-        if weight is None or weight.dim() != 5:
-            return
-
-        if patch_embedding.in_channels not in (base_channels, expected_channels):
-            return
-
-        if patch_embedding.in_channels == expected_channels:
-            with torch.no_grad():
-                rgb_weights = weight[:, :base_channels].clone()
-                weight[:, base_channels:expected_channels] = rgb_weights
-            return
-
-        bias = patch_embedding.bias
-        new_patch = torch.nn.Conv3d(
-            in_channels=expected_channels,
-            out_channels=patch_embedding.out_channels,
-            kernel_size=patch_embedding.kernel_size,
-            stride=patch_embedding.stride,
-            padding=patch_embedding.padding,
-            dilation=patch_embedding.dilation,
-            groups=patch_embedding.groups,
-            bias=bias is not None,
-            device=weight.device,
-            dtype=weight.dtype,
-        )
-        with torch.no_grad():
-            new_patch.weight.zero_()
-            rgb_weights = weight.clone()
-            new_patch.weight[:, :base_channels] = rgb_weights
-            new_patch.weight[:, base_channels:expected_channels] = rgb_weights
-            if bias is not None:
-                new_patch.bias.copy_(bias)
-        self.model.patch_embedding = new_patch
-
     def configure_pi3_adapters(
         self,
         pi3_channel_dim: int,
-        patch_size: int | None = None,
-        patch_start_idx: int | None = None,
+        patch_size: Optional[int] = None,
+        patch_start_idx: Optional[int] = None,
     ) -> None:
-        """
-        Initialize Pi3 latent projection and recovery adapters on the WanTI2V instance.
-
-        Args:
-            pi3_channel_dim: Channel dimension of the Pi3 decoder latent volume (typically 2 * dec_embed_dim).
-            patch_size: Pi3 patch size for reshaping decoder tokens.
-            patch_start_idx: Index where spatial tokens start in the decoder output.
-        """
-        latent_adapter = torch.nn.Conv3d(
-            in_channels=pi3_channel_dim,
-            out_channels=self.vae.model.z_dim,
-            kernel_size=1,
-            device=self.device,
+        self.latent_adapter, self.pi3_recover_adapter = create_pi3_adapters(
+            pi3_channel_dim, self.vae.model.z_dim, self.device
         )
-        pi3_recover_adapter = torch.nn.Conv3d(
-            in_channels=self.vae.model.z_dim,
-            out_channels=pi3_channel_dim,
-            kernel_size=1,
-            device=self.device,
-        )
-        with torch.no_grad():
-            latent_adapter.weight.zero_()
-            if latent_adapter.bias is not None:
-                latent_adapter.bias.zero_()
-            shared = min(latent_adapter.in_channels, latent_adapter.out_channels)
-            for i in range(shared):
-                latent_adapter.weight[i, i, 0, 0, 0] = 1.0
-
-            pi3_recover_adapter.weight.zero_()
-            if pi3_recover_adapter.bias is not None:
-                pi3_recover_adapter.bias.zero_()
-            shared_recover = min(
-                pi3_recover_adapter.in_channels,
-                pi3_recover_adapter.out_channels,
-            )
-            for i in range(shared_recover):
-                pi3_recover_adapter.weight[i, i, 0, 0, 0] = 1.0
-
-        self.latent_adapter = latent_adapter
-        self.pi3_recover_adapter = pi3_recover_adapter
         if patch_size is not None:
             self.pi3_patch_size = patch_size
         if patch_start_idx is not None:
             self.pi3_patch_start_idx = patch_start_idx
 
-    def _build_latent_volume(self, latents):
-        """
-        Reshape Pi3 decoder hidden tokens into a spatial volume aligned with the patch grid.
-        """
-        patch_size = latents.get("patch_size", self.pi3_patch_size)
-        patch_start_idx = latents.get("patch_start_idx", self.pi3_patch_start_idx)
-        if patch_size is None:
-            raise ValueError(
-                "patch_size must be provided to build Pi3 latent volume (set via configure_pi3_adapters or latents['patch_size'])."
-            )
-        if patch_start_idx is None:
-            raise ValueError(
-                "patch_start_idx must be provided to build Pi3 latent volume (set via configure_pi3_adapters or latents['patch_start_idx'])."
-            )
-
-        patch_h = latents['hw'][0] // patch_size
-        patch_w = latents['hw'][1] // patch_size
-        tokens = latents['hidden'][:, patch_start_idx:, :]
-        tokens = tokens.view(
-            latents['batch'],
-            latents['frames'],
-            patch_h,
-            patch_w,
-            tokens.size(-1),
-        )
-        # shape: [B, C, F, H, W]
-        tokens = tokens.permute(0, 4, 1, 2, 3).contiguous()
-        return tokens
-
-    def _prepare_pi3_condition(
-        self,
-        video_condition,
-        cond_latent: torch.Tensor,
-        concat_method: str,
-    ):
-        if video_condition is None or not self.use_pi3_condition:
-            return None, None, None, 0
-
-        cond = video_condition
-        if isinstance(cond, dict):
-            cond = self._build_latent_volume(cond)
-        if cond is None:
-            return None, None, None, 0
-        if isinstance(cond, list):
-            if len(cond) == 0:
-                return None, None, None, 0
-            cond = cond[0]
-        if cond.dim() == 4:
-            cond = cond.unsqueeze(0)
-        if cond.dim() != 5:
-            raise ValueError(
-                "video_condition must have shape (C, F, H, W) or (B, C, F, H, W)."
-            )
-        cond = cond.to(device=self.device, dtype=cond_latent.dtype)
-
-        print("Shape of video condition after _build_latent_volume", cond.shape)
-
-        pi3_condition_target_size = (cond_latent.shape[1], cond_latent.shape[2], cond_latent.shape[3])
-        if cond.shape[-3:] == pi3_condition_target_size:
-            interpolated = cond
-        else:
-            interpolated = torch.nn.functional.interpolate(
-                cond,
-                size=pi3_condition_target_size,
-                mode="trilinear",
-                align_corners=False,
-            )
-
-        print("Shape of interpolated video condition", interpolated.shape)
-
-        conv_output = (
-            self.latent_adapter(interpolated)
-            if self.latent_adapter is not None
-            else interpolated
-        )
-        conv_output = conv_output.contiguous()
-
-        print("Shape of conv output", conv_output.shape)
-
-        return (
-            conv_output.squeeze(0),
-            conv_output.shape[1],  # C
-        )
-
-    def _recover_pi3_latents(
-        self,
-        pi3_latent: torch.Tensor,
-        target_size: tuple[int, int, int],
-        flatten_to_frames: bool = False,
-    ) -> torch.Tensor | None:
-        """
-        Recover Pi3 decoder-space latents from diffusion outputs via interpolation + Conv3d.
-        """
-        adapter = getattr(self, "pi3_recover_adapter", None)
-        if adapter is None or pi3_latent is None:
-            return pi3_latent
-        processed_latent = pi3_latent
-        if processed_latent.dim() == 4:
-            processed_latent = processed_latent.unsqueeze(0)
-        if processed_latent.dim() != 5:
-            return None
-        cached_device = getattr(adapter, "_cached_device", None)
-        if cached_device is None:
-            try:
-                cached_device = next(adapter.parameters()).device
-            except StopIteration:
-                cached_device = processed_latent.device
-            adapter._cached_device = cached_device
-        target_device = cached_device
-        if processed_latent.device != target_device:
-            processed_latent = processed_latent.to(target_device)
-        needs_resize = processed_latent.shape[-3:] != target_size
-        resized = (
-            F.interpolate(
-                processed_latent,
-                size=target_size,
-                mode="trilinear",
-                align_corners=False,
-            )
-            if needs_resize
-            else processed_latent
-        )
-
-        print("Shape of recovered pi3 latents after interpolation", resized.shape)
-
-        if resized.shape[1] != adapter.in_channels:
-            in_ch = resized.shape[1]
-            exp_ch = adapter.in_channels
-            if exp_ch % in_ch == 0:
-                repeat_factor = exp_ch // in_ch
-                resized = resized.repeat(1, repeat_factor, 1, 1, 1)
-            elif in_ch > exp_ch:
-                resized = resized[:, :exp_ch]
-            else:
-                pad_ch = exp_ch - in_ch
-                pad = torch.zeros(
-                    (resized.shape[0], pad_ch, *resized.shape[2:]),
-                    device=resized.device,
-                    dtype=resized.dtype,
-                )
-                resized = torch.cat([resized, pad], dim=1)
-
-            print("Adjusted recovered pi3 channels for adapter", resized.shape)
-
-        recovered = adapter(resized)
-
-        print("Shape of recovered pi3 latents after projection", recovered.shape)
-
-        if flatten_to_frames:
-            batch_dim = recovered.shape[0]
-            channel_dim = recovered.shape[1]
-            frame_count = recovered.shape[2]
-            spatial_h, spatial_w = recovered.shape[3], recovered.shape[4]
-            # Reorder to frames-first layout and flatten spatial tokens so shapes align with RGB frames:
-            # (B, C, F, H, W) -> (F, B, H * W, C)
-            recovered = recovered.permute(2, 0, 3, 4, 1).contiguous().view(
-                frame_count,
-                batch_dim,
-                spatial_h * spatial_w,
-                channel_dim,
-            )
-            print("Shape of recovered pi3 latents after frame-first reshape", recovered.shape)
-            return recovered
-
-        return recovered.squeeze(0) if recovered.shape[0] == 1 else recovered
-
     def recover_pi3_latents(
         self,
-        pi3_latent: torch.Tensor | list[torch.Tensor] | None,
-        target_size: tuple[int, int, int],
+        pi3_latent: Optional[Union[torch.Tensor, List[torch.Tensor]]],
+        target_size: Tuple[int, int, int],
         flatten_to_frames: bool = False,
-    ) -> torch.Tensor | None:
-        """
-        Public wrapper to recover Pi3 latents using the configured recovery adapter.
-        """
-        if pi3_latent is None:
-            return None
-        print("Shape of pi3 latent before recovery", pi3_latent.shape)
-        if isinstance(pi3_latent, list):
-            if len(pi3_latent) == 0:
-                return None
-            pi3_latent = pi3_latent[0]
-        recovered = self._recover_pi3_latents(
+    ) -> Optional[torch.Tensor]:
+        return recover_pi3_latents(
             pi3_latent,
             target_size,
+            recover_adapter=getattr(self, "pi3_recover_adapter", None),
             flatten_to_frames=flatten_to_frames,
         )
-        if flatten_to_frames:
-            # Keep an explicit singleton view dimension so downstream Pi3 decoding
-            # treats the leading axis as frames instead of views.
-            if recovered is not None and recovered.dim() == 3:
-                recovered = recovered.unsqueeze(1)
-        return recovered
-
-    def _pi3_recovery_dims(
-        self,
-        video_condition: dict,
-        pi3_latent: torch.Tensor,
-        videos: list[torch.Tensor] | tuple[torch.Tensor] | None,
-    ) -> tuple[int, int, int]:
-        """
-        Compute target frame and spatial dimensions for Pi3 latent recovery.
-        """
-        patch_size = video_condition.get("patch_size", None)
-        if patch_size is None:
-            patch_size = self.pi3_patch_size or 1
-        patch_size = max(patch_size, 1)
-        hw = video_condition.get("hw")
-        if hw is None or len(hw) < 2:
-            patch_h = max(1, pi3_latent.shape[-2])
-            patch_w = max(1, pi3_latent.shape[-1])
-        else:
-            patch_h = max(1, hw[0] // patch_size)
-            patch_w = max(1, hw[1] // patch_size)
-        has_video = isinstance(videos, (list, tuple)) and len(videos) > 0
-        target_frames = pi3_latent.shape[1]
-        if has_video:
-            try:
-                video_shape = tuple(getattr(videos[0], "shape", ()))
-                if len(video_shape) == 5 and video_shape[2] > 0:
-                    # Expected layout: (B, C, F, H, W)
-                    target_frames = video_shape[2]
-                elif len(video_shape) >= 2 and video_shape[1] > 0:
-                    # Layout without batch: (C, F, H, W)
-                    target_frames = video_shape[1]
-            except Exception:
-                target_frames = pi3_latent.shape[1]
-        return target_frames, patch_h, patch_w
-
-    def _configure_model(self, model, use_sp, dit_fsdp, shard_fn,
-                         convert_model_dtype, trainable=False):
-        """
-        Configures a model object. This includes setting evaluation modes,
-        applying distributed parallel strategy, and handling device placement.
-
-        Args:
-            model (torch.nn.Module):
-                The model instance to configure.
-            use_sp (`bool`):
-                Enable distribution strategy of sequence parallel.
-            dit_fsdp (`bool`):
-                Enable FSDP sharding for DiT model.
-            shard_fn (callable):
-                The function to apply FSDP sharding.
-            convert_model_dtype (`bool`):
-                Convert DiT model parameters dtype to 'config.param_dtype'.
-                Only works without FSDP.
-
-        Returns:
-            torch.nn.Module:
-                The configured model.
-        """
-        model.eval().requires_grad_(False)
-        if trainable:
-            model.train().requires_grad_(True)
-
-        if use_sp:
-            for block in model.blocks:
-                block.self_attn.forward = types.MethodType(
-                    sp_attn_forward, block.self_attn)
-            model.forward = types.MethodType(sp_dit_forward, model)
-
-        if dist.is_initialized():
-            dist.barrier()
-
-        if dit_fsdp:
-            model = shard_fn(model)
-        else:
-            if convert_model_dtype:
-                model.to(self.param_dtype)
-            if not self.init_on_cpu:
-                model.to(self.device)
-
-        return model
 
     def generate(self,
                  input_prompt,
@@ -902,7 +568,7 @@ class WanTI2V:
 
         z = self.vae.encode([img])
         cond_latent = z[0]
-        print("Shape of rgb latent", cond_latent.shape)
+        logging.debug("RGB latent shape: %s", tuple(cond_latent.shape))
 
         fused_latent = cond_latent
         pi3_condition_adapted = None
@@ -914,12 +580,22 @@ class WanTI2V:
             (
                 pi3_condition_adapted,
                 condition_channels,
-            ) = self._prepare_pi3_condition(
+            ) = prepare_pi3_condition(
                 video_condition,
                 cond_latent,
-                concat_method,
+                device=self.device,
+                latent_adapter=self.latent_adapter,
+                use_pi3_condition=self.use_pi3_condition,
+                concat_method=concat_method,
+                default_patch_size=getattr(self, "pi3_patch_size", None),
+                default_patch_start_idx=getattr(self, "pi3_patch_start_idx", None),
             )
-        print("Shape of pi3 condition adapted", pi3_condition_adapted.shape)
+        pi3_condition_shape = (
+            tuple(pi3_condition_adapted.shape)
+            if pi3_condition_adapted is not None
+            else "none"
+        )
+        logging.debug("Pi3 condition shape: %s", pi3_condition_shape)
 
         if pi3_condition_adapted is not None:
             if concat_method == "channel":
@@ -1112,12 +788,13 @@ class WanTI2V:
             if self.rank == 0:
                 videos = self.vae.decode(x0)
                 if pi3_latent is not None:
-                    target_frames, patch_h, patch_w = self._pi3_recovery_dims(
-                        video_condition, pi3_latent, videos
+                    target_frames, patch_h, patch_w = pi3_recovery_dims(
+                        video_condition,
+                        pi3_latent,
+                        videos,
+                        default_patch_size=getattr(self, "pi3_patch_size", None),
                     )
-                    print("the cnt of target frames is: ", target_frames)
-                    # test if pi3 decoding is correct
-                    # target_frames = 1
+                    logging.debug("Pi3 recovery target frames: %s", target_frames)
                     pi3_decoded = self.recover_pi3_latents(
                         pi3_latent,
                         (target_frames, patch_h, patch_w),

@@ -5,7 +5,6 @@ import math
 import os
 import random
 import sys
-import types
 from contextlib import contextmanager
 from functools import partial
 
@@ -17,7 +16,6 @@ import torchvision.transforms.functional as TF
 from tqdm import tqdm
 
 from .distributed.fsdp import shard_model
-from .distributed.sequence_parallel import sp_attn_forward, sp_dit_forward
 from .distributed.util import get_world_size
 from .modules.model import WanModel
 from .modules.t5 import T5EncoderModel
@@ -28,6 +26,7 @@ from .utils.fm_solvers import (
     retrieve_timesteps,
 )
 from .utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
+from .utils.pipeline_utils import configure_model, prepare_model_for_timestep
 
 
 class WanI2V:
@@ -103,105 +102,33 @@ class WanI2V:
         logging.info(f"Creating WanModel from {checkpoint_dir}")
         self.low_noise_model = WanModel.from_pretrained(
             checkpoint_dir, subfolder=config.low_noise_checkpoint)
-        self.low_noise_model = self._configure_model(
+        self.low_noise_model = configure_model(
             model=self.low_noise_model,
             use_sp=use_sp,
             dit_fsdp=dit_fsdp,
             shard_fn=shard_fn,
-            convert_model_dtype=convert_model_dtype)
+            convert_model_dtype=convert_model_dtype,
+            init_on_cpu=self.init_on_cpu,
+            device=self.device,
+            param_dtype=self.param_dtype)
 
         self.high_noise_model = WanModel.from_pretrained(
             checkpoint_dir, subfolder=config.high_noise_checkpoint)
-        self.high_noise_model = self._configure_model(
+        self.high_noise_model = configure_model(
             model=self.high_noise_model,
             use_sp=use_sp,
             dit_fsdp=dit_fsdp,
             shard_fn=shard_fn,
-            convert_model_dtype=convert_model_dtype)
+            convert_model_dtype=convert_model_dtype,
+            init_on_cpu=self.init_on_cpu,
+            device=self.device,
+            param_dtype=self.param_dtype)
         if use_sp:
             self.sp_size = get_world_size()
         else:
             self.sp_size = 1
 
         self.sample_neg_prompt = config.sample_neg_prompt
-
-    def _configure_model(self, model, use_sp, dit_fsdp, shard_fn,
-                         convert_model_dtype):
-        """
-        Configures a model object. This includes setting evaluation modes,
-        applying distributed parallel strategy, and handling device placement.
-
-        Args:
-            model (torch.nn.Module):
-                The model instance to configure.
-            use_sp (`bool`):
-                Enable distribution strategy of sequence parallel.
-            dit_fsdp (`bool`):
-                Enable FSDP sharding for DiT model.
-            shard_fn (callable):
-                The function to apply FSDP sharding.
-            convert_model_dtype (`bool`):
-                Convert DiT model parameters dtype to 'config.param_dtype'.
-                Only works without FSDP.
-
-        Returns:
-            torch.nn.Module:
-                The configured model.
-        """
-        model.eval().requires_grad_(False)
-
-        if use_sp:
-            for block in model.blocks:
-                block.self_attn.forward = types.MethodType(
-                    sp_attn_forward, block.self_attn)
-            model.forward = types.MethodType(sp_dit_forward, model)
-
-        if dist.is_initialized():
-            dist.barrier()
-
-        if dit_fsdp:
-            model = shard_fn(model)
-        else:
-            if convert_model_dtype:
-                model.to(self.param_dtype)
-            if not self.init_on_cpu:
-                model.to(self.device)
-
-        return model
-
-    def _prepare_model_for_timestep(self, t, boundary, offload_model):
-        r"""
-        Prepares and returns the required model for the current timestep.
-
-        Args:
-            t (torch.Tensor):
-                current timestep.
-            boundary (`int`):
-                The timestep threshold. If `t` is at or above this value,
-                the `high_noise_model` is considered as the required model.
-            offload_model (`bool`):
-                A flag intended to control the offloading behavior.
-
-        Returns:
-            torch.nn.Module:
-                The active model on the target device for the current timestep.
-        """
-        if t.item() >= boundary:
-            required_model_name = 'high_noise_model'
-            offload_model_name = 'low_noise_model'
-        else:
-            required_model_name = 'low_noise_model'
-            offload_model_name = 'high_noise_model'
-        if offload_model or self.init_on_cpu:
-            if next(getattr(
-                    self,
-                    offload_model_name).parameters()).device.type == 'cuda':
-                getattr(self, offload_model_name).to('cpu')
-            if next(getattr(
-                    self,
-                    required_model_name).parameters()).device.type == 'cpu':
-                getattr(self, required_model_name).to(self.device)
-        return getattr(self, required_model_name)
 
     def generate(self,
                  input_prompt,
@@ -385,8 +312,15 @@ class WanI2V:
 
                 timestep = torch.stack(timestep).to(self.device)
 
-                model = self._prepare_model_for_timestep(
-                    t, boundary, offload_model)
+                model = prepare_model_for_timestep(
+                    t,
+                    boundary,
+                    low_noise_model=self.low_noise_model,
+                    high_noise_model=self.high_noise_model,
+                    offload_model=offload_model,
+                    init_on_cpu=self.init_on_cpu,
+                    device=self.device,
+                )
                 sample_guide_scale = guide_scale[1] if t.item(
                 ) >= boundary else guide_scale[0]
 
