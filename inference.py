@@ -24,12 +24,12 @@ def _add_repo_to_path() -> Path:
 
 REPO_ROOT = _add_repo_to_path()
 
-import torch  # noqa: E402
-from PIL import Image  # noqa: E402
-from pi3.utils.basic import write_ply  # noqa: E402
-from wan import configs  # noqa: E402
-from wan.pi3_guidance import Pi3GuidedTI2V  # noqa: E402
-from wan.utils.utils import save_video, str2bool  # noqa: E402
+import torch
+from PIL import Image
+from pi3.utils.basic import write_ply
+from wan import configs
+from wan.pi3_guidance import Pi3GuidedTI2V
+from wan.utils.utils import save_video, str2bool
 
 
 PI3_CONF_THRESHOLD = 0.5
@@ -179,7 +179,6 @@ def main():
         latents_payload = {
             "rgb_latent": outputs.get("rgb_latent"),
             "pi3_latent": outputs.get("pi3_latent"),
-            "caption": outputs.get("caption"),
         }
         torch.save(latents_payload, args.save_latents)
         logging.info("Saved latents to %s", args.save_latents)

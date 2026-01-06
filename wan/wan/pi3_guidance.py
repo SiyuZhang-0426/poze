@@ -111,7 +111,6 @@ class Pi3GuidedTI2V(nn.Module):
             "rgb_latent": rgb_latent,
             "pi3_latent": pi3_latent,
             "pi3_preds": pi3_preds,
-            "caption": prompt,
         }
 
     def training_step(
