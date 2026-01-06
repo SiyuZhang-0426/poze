@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 
@@ -17,27 +18,13 @@ FRAMES_PER_DECODE = 1
 MIN_RESHAPE_DIMS = 3
 
 
-def ensure_view_dim(frame_first_latent: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
-    """
-    Guarantee an explicit view dimension (V) for frame-first Pi3 latents.
-    Converts (F, HW, C) to (F, 1, HW, C) when the view axis is missing.
-    """
-    if frame_first_latent is not None and frame_first_latent.dim() == 3:
-        return frame_first_latent.unsqueeze(1)
-    return frame_first_latent
-
-
-def _nested_frames_list(tensor: torch.Tensor):
-    """Convert (B, F, ...) tensor into nested [batch][frame] list for per-frame access."""
-    return [list(torch.unbind(batch_tensor, dim=0)) for batch_tensor in torch.unbind(tensor, dim=0)]
-
-
-class Pi3StitchingLayer:
+class Pi3StitchingLayer(nn.Module):
     """
     Handle padding and tensor preparation so images align with Pi3 patch sizing.
     """
 
     def __init__(self, pi3_model, device: Union[torch.device, str]) -> None:
+        super().__init__()
         self.pi3 = pi3_model
         self.device = torch.device(device)
 
@@ -115,16 +102,35 @@ class Pi3StitchingLayer:
             tensor = TF.to_tensor(pil).unsqueeze(0).unsqueeze(0)
         return tensor.to(self.device), pil
 
+    def forward(self, image, use_pi3: bool):
+        return self.prepare_image_inputs(image, use_pi3)
 
-class Pi3RecoverLayer:
+
+class Pi3RecoverLayer(nn.Module):
     """
     Decode dynamic Pi3 latents back to Pi3 outputs with cached token shape metadata.
     """
 
     def __init__(self, pi3_model) -> None:
+        super().__init__()
         self.pi3 = pi3_model
         self._pi3_shape: Optional[Tuple[int, int, int]] = None
         self._pi3_hw: Optional[Tuple[int, int]] = None
+
+    @staticmethod
+    def _ensure_view_dim(frame_first_latent: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
+        """
+        Guarantee an explicit view dimension (V) for frame-first Pi3 latents.
+        Converts (F, HW, C) to (F, 1, HW, C) when the view axis is missing.
+        """
+        if frame_first_latent is not None and frame_first_latent.dim() == 3:
+            return frame_first_latent.unsqueeze(1)
+        return frame_first_latent
+
+    @staticmethod
+    def _nested_frames_list(tensor: torch.Tensor):
+        """Convert (B, F, ...) tensor into nested [batch][frame] list for per-frame access."""
+        return [list(torch.unbind(batch_tensor, dim=0)) for batch_tensor in torch.unbind(tensor, dim=0)]
 
     def cache_latent_metadata(self, latents: Optional[Dict[str, Any]]) -> None:
         self._pi3_shape = None
@@ -145,7 +151,7 @@ class Pi3RecoverLayer:
         if self.pi3 is None or pi3_latent is None:
             return None
         with torch.no_grad():
-            recovered = ensure_view_dim(pi3_latent)
+            recovered = self._ensure_view_dim(pi3_latent)
             expected_hw = self._expected_hw_tokens()
             frame_first = (
                 recovered is not None
@@ -219,10 +225,21 @@ class Pi3RecoverLayer:
             conf = decoded.get("conf")
             has_conf = conf is not None and conf.dim() == EXPECTED_POINT_TENSOR_DIMS
             if points is not None and points.dim() == EXPECTED_POINT_TENSOR_DIMS:
-                points_list = _nested_frames_list(points)
+                points_list = self._nested_frames_list(points)
                 if has_conf:
-                    conf_list = _nested_frames_list(conf)
+                    conf_list = self._nested_frames_list(conf)
                     decoded["conf_list"] = conf_list
                 decoded["points_list"] = points_list
             logger.debug("Decoded Pi3 latents into shapes: %s", {k: v.shape if torch.is_tensor(v) else type(v) for k, v in decoded.items()})
             return decoded
+
+    def forward(
+        self,
+        pi3_latent: Optional[torch.Tensor],
+        *,
+        latents_meta: Optional[Dict[str, Any]] = None,
+        cache_metadata: bool = True,
+    ) -> Optional[Dict[str, Any]]:
+        if cache_metadata:
+            self.cache_latent_metadata(latents_meta)
+        return self.decode_latent_sequence(pi3_latent)

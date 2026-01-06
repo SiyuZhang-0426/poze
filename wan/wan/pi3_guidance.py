@@ -71,7 +71,7 @@ class Pi3GuidedTI2V(nn.Module):
             )
 
     def generate_with_3d(self, prompt: str, image, enable_grad: bool = False, decode_pi3: bool = False, **kwargs) -> Dict[str, Any]:
-        imgs, pil_image = self.stitching_layer.prepare_image_inputs(image, self.use_pi3)
+        imgs, pil_image = self.stitching_layer(image, self.use_pi3)
         video_condition = None
         # Reset per-call cache; used only to decode outputs from this generation.
         if self.use_pi3:
@@ -80,11 +80,12 @@ class Pi3GuidedTI2V(nn.Module):
             latents = latents.copy()
             latents["patch_size"] = self.pi3.patch_size
             latents["patch_start_idx"] = self.pi3.patch_start_idx
-            self.recover_layer.cache_latent_metadata(latents)
+            # Cache metadata through the module to keep state in the layer.
+            self.recover_layer(None, latents_meta=latents)
 
             video_condition = latents
         else:
-            self.recover_layer.cache_latent_metadata(None)
+            self.recover_layer(None, latents_meta=None)
         if enable_grad:
             kwargs.setdefault("offload_model", False)
         generated = self.wan.generate(
@@ -105,7 +106,7 @@ class Pi3GuidedTI2V(nn.Module):
             pi3_latent = None
         pi3_preds = None
         if decode_pi3 and pi3_latent is not None:
-            pi3_preds = self.recover_layer.decode_latent_sequence(pi3_latent)
+            pi3_preds = self.recover_layer(pi3_latent, cache_metadata=False)
         return {
             "video": video,
             "rgb_latent": rgb_latent,
