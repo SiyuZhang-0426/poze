@@ -246,7 +246,7 @@ def recover_pi3_latents(
     pi3_latent: Union[torch.Tensor, List[torch.Tensor], None],
     target_size: Tuple[int, int, int],
     *,
-    recover_adapter=None,
+    recover_adapter: Optional[torch.nn.Module] = None,
     flatten_to_frames: bool = False,
 ) -> Optional[torch.Tensor]:
     if pi3_latent is None:
