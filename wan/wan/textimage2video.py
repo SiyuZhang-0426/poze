@@ -589,11 +589,12 @@ class WanTI2V:
                 default_patch_size=getattr(self, "pi3_patch_size", None),
                 default_patch_start_idx=getattr(self, "pi3_patch_start_idx", None),
             )
-        logging.debug(
-            "Pi3 condition shape: %s",
+        pi3_condition_shape = (
             tuple(pi3_condition_adapted.shape)
-            if pi3_condition_adapted is not None else "none",
+            if pi3_condition_adapted is not None
+            else "none"
         )
+        logging.debug("Pi3 condition shape: %s", pi3_condition_shape)
 
         if pi3_condition_adapted is not None:
             if concat_method == "channel":

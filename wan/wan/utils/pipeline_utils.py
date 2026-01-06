@@ -1,6 +1,6 @@
 import logging
 import types
-from typing import Tuple
+from typing import List, Optional, Tuple, Union
 
 import torch
 import torch.distributed as dist
@@ -168,8 +168,8 @@ def create_pi3_adapters(pi3_channel_dim: int, target_channels: int,
 def build_pi3_latent_volume(
     latents: dict,
     *,
-    default_patch_size: int | None,
-    default_patch_start_idx: int | None,
+    default_patch_size: Optional[int],
+    default_patch_start_idx: Optional[int],
 ) -> torch.Tensor:
     patch_size = latents.get("patch_size", default_patch_size)
     patch_start_idx = latents.get("patch_start_idx", default_patch_start_idx)
@@ -203,9 +203,9 @@ def prepare_pi3_condition(
     latent_adapter,
     use_pi3_condition: bool,
     concat_method: str,
-    default_patch_size: int | None,
-    default_patch_start_idx: int | None,
-) -> Tuple[torch.Tensor | None, int]:
+    default_patch_size: Optional[int],
+    default_patch_start_idx: Optional[int],
+) -> Tuple[Optional[torch.Tensor], int]:
     if video_condition is None or not use_pi3_condition:
         return None, 0
 
@@ -243,12 +243,12 @@ def prepare_pi3_condition(
 
 
 def recover_pi3_latents(
-    pi3_latent: torch.Tensor | list[torch.Tensor] | None,
+    pi3_latent: Union[torch.Tensor, List[torch.Tensor], None],
     target_size: tuple[int, int, int],
     *,
     recover_adapter=None,
     flatten_to_frames: bool = False,
-):
+) -> Optional[torch.Tensor]:
     if pi3_latent is None:
         return None
     if isinstance(pi3_latent, list):
@@ -323,7 +323,7 @@ def pi3_recovery_dims(
     pi3_latent: torch.Tensor,
     videos,
     *,
-    default_patch_size: int | None,
+    default_patch_size: Optional[int],
 ) -> tuple[int, int, int]:
     patch_size = video_condition.get("patch_size", default_patch_size)
     patch_size = max(patch_size or 1, 1)
