@@ -58,6 +58,7 @@ class Pi3GuidedTI2V(nn.Module):
             convert_model_dtype=False,
             use_pi3_condition=self.use_pi3,
             concat_method=concat_method,
+            pi3_recover_layer=self.recover_layer,
             **wan_kwargs,
         )
         if self.use_pi3:

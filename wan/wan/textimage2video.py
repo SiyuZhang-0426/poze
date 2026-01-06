@@ -55,6 +55,7 @@ class WanTI2V:
         use_pi3_condition=True,
         trainable=False,
         concat_method: str = "channel",
+        pi3_recover_layer=None,
     ):
         r"""
         Initializes the Wan text-to-video generation model components.
@@ -146,6 +147,7 @@ class WanTI2V:
             self.sp_size = 1
 
         self.sample_neg_prompt = config.sample_neg_prompt
+        self.pi3_recover_layer = pi3_recover_layer
 
     def configure_pi3_adapters(
         self,
@@ -577,19 +579,35 @@ class WanTI2V:
         latent_frames = (frame_count - 1) // self.vae_stride[0] + 1
         concat_method = getattr(self, "concat_method", "channel")
         if video_condition is not None and self.use_pi3_condition:
-            (
-                pi3_condition_adapted,
-                condition_channels,
-            ) = prepare_pi3_condition(
-                video_condition,
-                cond_latent,
-                device=self.device,
-                latent_adapter=self.latent_adapter,
-                use_pi3_condition=self.use_pi3_condition,
-                concat_method=concat_method,
-                default_patch_size=getattr(self, "pi3_patch_size", None),
-                default_patch_start_idx=getattr(self, "pi3_patch_start_idx", None),
-            )
+            recover_layer = getattr(self, "pi3_recover_layer", None)
+            if recover_layer is not None:
+                (
+                    pi3_condition_adapted,
+                    condition_channels,
+                ) = recover_layer.prepare_condition(
+                    video_condition,
+                    cond_latent,
+                    device=self.device,
+                    latent_adapter=self.latent_adapter,
+                    use_pi3_condition=self.use_pi3_condition,
+                    concat_method=concat_method,
+                    default_patch_size=getattr(self, "pi3_patch_size", None),
+                    default_patch_start_idx=getattr(self, "pi3_patch_start_idx", None),
+                )
+            else:
+                (
+                    pi3_condition_adapted,
+                    condition_channels,
+                ) = prepare_pi3_condition(
+                    video_condition,
+                    cond_latent,
+                    device=self.device,
+                    latent_adapter=self.latent_adapter,
+                    use_pi3_condition=self.use_pi3_condition,
+                    concat_method=concat_method,
+                    default_patch_size=getattr(self, "pi3_patch_size", None),
+                    default_patch_start_idx=getattr(self, "pi3_patch_start_idx", None),
+                )
         pi3_condition_shape = (
             tuple(pi3_condition_adapted.shape)
             if pi3_condition_adapted is not None
@@ -795,11 +813,20 @@ class WanTI2V:
                         default_patch_size=getattr(self, "pi3_patch_size", None),
                     )
                     logging.debug("Pi3 recovery target frames: %s", target_frames)
-                    pi3_decoded = self.recover_pi3_latents(
-                        pi3_latent,
-                        (target_frames, patch_h, patch_w),
-                        flatten_to_frames=True,
-                    )
+                    recover_layer = getattr(self, "pi3_recover_layer", None)
+                    if recover_layer is not None:
+                        pi3_decoded = recover_layer.recover_latents(
+                            pi3_latent,
+                            (target_frames, patch_h, patch_w),
+                            recover_adapter=getattr(self, "pi3_recover_adapter", None),
+                            flatten_to_frames=True,
+                        )
+                    else:
+                        pi3_decoded = self.recover_pi3_latents(
+                            pi3_latent,
+                            (target_frames, patch_h, patch_w),
+                            flatten_to_frames=True,
+                        )
                     if pi3_decoded is not None:
                         logging.info(
                             "Pi3 latents recovered with frame-first layout (F, B, H * W, C): %s",

@@ -1,7 +1,7 @@
 import logging
 import math
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -146,6 +146,154 @@ class Pi3RecoverLayer(nn.Module):
         if self._pi3_shape is None or self.pi3 is None:
             return None
         return max(1, self._pi3_shape[1] - self.pi3.patch_start_idx)
+
+    def build_latent_volume(
+        self,
+        latents: Dict[str, Any],
+        *,
+        default_patch_size: Optional[int] = None,
+        default_patch_start_idx: Optional[int] = None,
+    ) -> torch.Tensor:
+        patch_size = latents.get("patch_size", default_patch_size or getattr(self.pi3, "patch_size", None))
+        patch_start_idx = latents.get("patch_start_idx", default_patch_start_idx or getattr(self.pi3, "patch_start_idx", None))
+        if patch_size is None:
+            raise ValueError(
+                "patch_size must be provided to build Pi3 latent volume (set via configure_pi3_adapters or latents['patch_size'])."
+            )
+        if patch_start_idx is None:
+            raise ValueError(
+                "patch_start_idx must be provided to build Pi3 latent volume (set via configure_pi3_adapters or latents['patch_start_idx'])."
+            )
+
+        patch_h = latents["hw"][0] // patch_size
+        patch_w = latents["hw"][1] // patch_size
+        tokens = latents["hidden"][:, patch_start_idx:, :]
+        tokens = tokens.view(
+            latents["batch"],
+            latents["frames"],
+            patch_h,
+            patch_w,
+            tokens.size(-1),
+        )
+        return tokens.permute(0, 4, 1, 2, 3).contiguous()
+
+    def prepare_condition(
+        self,
+        video_condition: Any,
+        cond_latent: torch.Tensor,
+        *,
+        device: torch.device,
+        latent_adapter: Optional[torch.nn.Module],
+        use_pi3_condition: bool,
+        concat_method: str,
+        default_patch_size: Optional[int] = None,
+        default_patch_start_idx: Optional[int] = None,
+    ) -> Tuple[Optional[torch.Tensor], int]:
+        if video_condition is None or not use_pi3_condition:
+            return None, 0
+
+        cond = video_condition
+        if isinstance(cond, dict):
+            cond = self.build_latent_volume(
+                cond,
+                default_patch_size=default_patch_size,
+                default_patch_start_idx=default_patch_start_idx,
+            )
+        if cond is None:
+            return None, 0
+        if isinstance(cond, list):
+            if len(cond) == 0:
+                return None, 0
+            cond = cond[0]
+        if cond.dim() == 4:
+            cond = cond.unsqueeze(0)
+        if cond.dim() != 5:
+            raise ValueError("video_condition must have shape (C, F, H, W) or (B, C, F, H, W).")
+        cond = cond.to(device=device, dtype=cond_latent.dtype)
+
+        target_size = (cond_latent.shape[1], cond_latent.shape[2], cond_latent.shape[3])
+        if cond.shape[-3:] != target_size:
+            cond = torch.nn.functional.interpolate(cond, size=target_size, mode="trilinear", align_corners=False)
+
+        conv_output = latent_adapter(cond) if latent_adapter is not None else cond
+        conv_output = conv_output.contiguous()
+
+        logger.debug("Prepared Pi3 condition with shape %s", conv_output.shape)
+        return conv_output.squeeze(0), conv_output.shape[1]
+
+    def recover_latents(
+        self,
+        pi3_latent: Optional[Union[torch.Tensor, List[torch.Tensor]]],
+        target_size: Tuple[int, int, int],
+        *,
+        recover_adapter: Optional[torch.nn.Module] = None,
+        flatten_to_frames: bool = False,
+    ) -> Optional[torch.Tensor]:
+        if pi3_latent is None:
+            return None
+        if isinstance(pi3_latent, list):
+            if len(pi3_latent) == 0:
+                return None
+            pi3_latent = pi3_latent[0]
+
+        logger.debug("Pi3 latent before recovery shape: %s", getattr(pi3_latent, "shape", None))
+
+        if recover_adapter is None:
+            return pi3_latent
+
+        processed_latent = pi3_latent
+        if processed_latent.dim() == 4:
+            processed_latent = processed_latent.unsqueeze(0)
+        if processed_latent.dim() != 5:
+            return None
+
+        try:
+            target_device = next(recover_adapter.parameters()).device
+        except StopIteration:
+            target_device = processed_latent.device
+        processed_latent = processed_latent.to(target_device)
+
+        if processed_latent.shape[-3:] != target_size:
+            processed_latent = F.interpolate(
+                processed_latent,
+                size=target_size,
+                mode="trilinear",
+                align_corners=False,
+            )
+
+        if processed_latent.shape[1] != recover_adapter.in_channels:
+            in_ch = processed_latent.shape[1]
+            exp_ch = recover_adapter.in_channels
+            if exp_ch % in_ch == 0:
+                repeat_factor = exp_ch // in_ch
+                processed_latent = processed_latent.repeat(1, repeat_factor, 1, 1, 1)
+            elif in_ch > exp_ch:
+                processed_latent = processed_latent[:, :exp_ch]
+            else:
+                pad_ch = exp_ch - in_ch
+                pad = torch.zeros(
+                    (processed_latent.shape[0], pad_ch, *processed_latent.shape[2:]),
+                    device=processed_latent.device,
+                    dtype=processed_latent.dtype,
+                )
+                processed_latent = torch.cat([processed_latent, pad], dim=1)
+
+        recovered = recover_adapter(processed_latent)
+
+        if flatten_to_frames:
+            batch_dim = recovered.shape[0]
+            channel_dim = recovered.shape[1]
+            frame_count = recovered.shape[2]
+            spatial_h, spatial_w = recovered.shape[3], recovered.shape[4]
+            recovered = recovered.permute(2, 0, 3, 4, 1).contiguous().view(
+                frame_count,
+                batch_dim,
+                spatial_h * spatial_w,
+                channel_dim,
+            )
+            return recovered.unsqueeze(1) if recovered.dim() == 3 else recovered
+
+        return recovered.squeeze(0) if recovered.shape[0] == 1 else recovered
 
     def decode_latent_sequence(self, pi3_latent: Optional[torch.Tensor]) -> Optional[Dict[str, Any]]:
         if self.pi3 is None or pi3_latent is None:
