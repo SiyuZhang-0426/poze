@@ -1,7 +1,7 @@
 import logging
 import math
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Union
 
 import torch
 import torch.nn.functional as F
@@ -17,7 +17,7 @@ FRAMES_PER_DECODE = 1
 MIN_RESHAPE_DIMS = 3
 
 
-def ensure_view_dim(frame_first_latent: torch.Tensor | None) -> torch.Tensor | None:
+def ensure_view_dim(frame_first_latent: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
     """
     Guarantee an explicit view dimension (V) for frame-first Pi3 latents.
     Converts (F, HW, C) to (F, 1, HW, C) when the view axis is missing.
@@ -37,7 +37,7 @@ class Pi3StitchingLayer:
     Handle padding and tensor preparation so images align with Pi3 patch sizing.
     """
 
-    def __init__(self, pi3_model, device: torch.device | str) -> None:
+    def __init__(self, pi3_model, device: Union[torch.device, str]) -> None:
         self.pi3 = pi3_model
         self.device = torch.device(device)
 
@@ -141,7 +141,7 @@ class Pi3RecoverLayer:
             return None
         return max(1, self._pi3_shape[1] - self.pi3.patch_start_idx)
 
-    def decode_latent_sequence(self, pi3_latent: torch.Tensor | None) -> Optional[Dict[str, Any]]:
+    def decode_latent_sequence(self, pi3_latent: Optional[torch.Tensor]) -> Optional[Dict[str, Any]]:
         if self.pi3 is None or pi3_latent is None:
             return None
         with torch.no_grad():
