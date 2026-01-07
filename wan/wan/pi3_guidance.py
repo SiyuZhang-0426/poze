@@ -75,7 +75,14 @@ class Pi3GuidedTI2V(nn.Module):
             self.recover_layer.latent_adapter = self.wan.latent_adapter
             self.recover_layer.recover_adapter = self.wan.pi3_recover_adapter
 
-    def generate_with_3d(self, prompt: str, image, enable_grad: bool = False, decode_pi3: bool = False, **kwargs) -> Dict[str, Any]:
+    def generate_with_3d(
+        self,
+        prompt: str,
+        image,
+        enable_grad: bool = False,
+        decode_pi3: bool = False,
+        **kwargs
+    ) -> Dict[str, Any]:
         imgs, pil_image = self.stitching_layer(image, self.use_pi3)
         video_condition = None
         # Reset per-call cache; used only to decode outputs from this generation.

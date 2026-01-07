@@ -10,7 +10,6 @@ from functools import partial
 from typing import List, Optional, Tuple, Union
 
 import torch
-import torch.cuda.amp as amp
 import torch.distributed as dist
 import torchvision.transforms.functional as TF
 from PIL import Image

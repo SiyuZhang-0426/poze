@@ -26,8 +26,8 @@ from plyfile import PlyData
 import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-import imageio  # noqa: E402
+import matplotlib.pyplot as plt
+import imageio
 
 
 # Shared patterns keep _natural_key split/fullmatch logic consistent for numeric filenames.

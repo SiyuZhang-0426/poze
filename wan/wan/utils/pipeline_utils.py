@@ -130,8 +130,11 @@ def align_patch_embedding_for_conditioning(
     model.patch_embedding = new_patch
 
 
-def create_pi3_adapters(pi3_channel_dim: int, target_channels: int,
-                        device: torch.device):
+def create_pi3_adapters(
+    pi3_channel_dim: int,
+    target_channels: int,
+    device: torch.device,
+):
     latent_adapter = torch.nn.Conv3d(
         in_channels=pi3_channel_dim,
         out_channels=target_channels,
