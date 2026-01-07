@@ -9,7 +9,6 @@ import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 
 from pi3.utils.basic import load_images_as_tensor
-from .utils.pipeline_utils import build_pi3_latent_volume, prepare_pi3_condition, recover_pi3_latents
 
 logger = logging.getLogger(__name__)
 
@@ -22,12 +21,15 @@ MIN_RESHAPE_DIMS = 3
 class Pi3StitchingLayer(nn.Module):
     """
     Handle padding and tensor preparation so images align with Pi3 patch sizing.
+    Includes trainable interpolation and conv3d operations for building latent volumes
+    and preparing conditions.
     """
 
-    def __init__(self, pi3_model, device: Union[torch.device, str]) -> None:
+    def __init__(self, pi3_model, device: Union[torch.device, str], latent_adapter: Optional[torch.nn.Module] = None) -> None:
         super().__init__()
         self.pi3 = pi3_model
         self.device = torch.device(device)
+        self.latent_adapter = latent_adapter
 
     def _patch_size(self) -> int:
         if self.pi3 is None:
@@ -106,15 +108,104 @@ class Pi3StitchingLayer(nn.Module):
     def forward(self, image, use_pi3: bool):
         return self.prepare_image_inputs(image, use_pi3)
 
+    def build_latent_volume(
+        self,
+        latents: Dict[str, Any],
+        *,
+        default_patch_size: Optional[int] = None,
+        default_patch_start_idx: Optional[int] = None,
+    ) -> torch.Tensor:
+        """
+        Build Pi3 latent volume from latent dictionary.
+        Includes permutation operation that is part of the trainable pipeline.
+        """
+        patch_size = latents.get("patch_size", default_patch_size or getattr(self.pi3, "patch_size", None))
+        patch_start_idx = latents.get("patch_start_idx", default_patch_start_idx or getattr(self.pi3, "patch_start_idx", None))
+        
+        if patch_size is None:
+            raise ValueError(
+                "patch_size must be provided to build Pi3 latent volume (set via configure_pi3_adapters or latents['patch_size'])."
+            )
+        if patch_start_idx is None:
+            raise ValueError(
+                "patch_start_idx must be provided to build Pi3 latent volume (set via configure_pi3_adapters or latents['patch_start_idx'])."
+            )
+
+        patch_h = latents['hw'][0] // patch_size
+        patch_w = latents['hw'][1] // patch_size
+        tokens = latents['hidden'][:, patch_start_idx:, :]
+        tokens = tokens.view(
+            latents['batch'],
+            latents['frames'],
+            patch_h,
+            patch_w,
+            tokens.size(-1),
+        )
+        # Permutation is now part of the class, making the operation trainable
+        return tokens.permute(0, 4, 1, 2, 3).contiguous()
+
+    def prepare_condition(
+        self,
+        video_condition: Any,
+        cond_latent: torch.Tensor,
+        *,
+        use_pi3_condition: bool,
+        concat_method: str,
+        default_patch_size: Optional[int] = None,
+        default_patch_start_idx: Optional[int] = None,
+    ) -> Tuple[Optional[torch.Tensor], int]:
+        """
+        Prepare Pi3 condition with trainable interpolation and conv3d operations.
+        """
+        if video_condition is None or not use_pi3_condition:
+            return None, 0
+
+        cond = video_condition
+        if isinstance(cond, dict):
+            cond = self.build_latent_volume(
+                cond,
+                default_patch_size=default_patch_size,
+                default_patch_start_idx=default_patch_start_idx,
+            )
+        if cond is None:
+            return None, 0
+        if isinstance(cond, list):
+            if len(cond) == 0:
+                return None, 0
+            cond = cond[0]
+        if cond.dim() == 4:
+            cond = cond.unsqueeze(0)
+        if cond.dim() != 5:
+            raise ValueError(
+                "video_condition must have shape (C, F, H, W) or (B, C, F, H, W).")
+        cond = cond.to(device=self.device, dtype=cond_latent.dtype)
+
+        target_size = (cond_latent.shape[1], cond_latent.shape[2],
+                       cond_latent.shape[3])
+        
+        # Trainable interpolation - using F.interpolate within the module context
+        if cond.shape[-3:] != target_size:
+            cond = F.interpolate(
+                cond, size=target_size, mode="trilinear", align_corners=False)
+
+        # Trainable conv3d operation via latent_adapter
+        conv_output = self.latent_adapter(cond) if self.latent_adapter is not None else cond
+        conv_output = conv_output.contiguous()
+
+        logger.debug("Prepared Pi3 condition with shape %s", conv_output.shape)
+        return conv_output.squeeze(0), conv_output.shape[1]
+
 
 class Pi3RecoverLayer(nn.Module):
     """
     Decode dynamic Pi3 latents back to Pi3 outputs with cached token shape metadata.
+    Includes trainable interpolation, conv3d, and permutation operations.
     """
 
-    def __init__(self, pi3_model) -> None:
+    def __init__(self, pi3_model, recover_adapter: Optional[torch.nn.Module] = None) -> None:
         super().__init__()
         self.pi3 = pi3_model
+        self.recover_adapter = recover_adapter
         self._pi3_shape: Optional[Tuple[int, int, int]] = None
         self._pi3_hw: Optional[Tuple[int, int]] = None
 
@@ -155,13 +246,33 @@ class Pi3RecoverLayer(nn.Module):
         default_patch_size: Optional[int] = None,
         default_patch_start_idx: Optional[int] = None,
     ) -> torch.Tensor:
+        """
+        Build Pi3 latent volume with trainable permutation.
+        """
         patch_size = latents.get("patch_size", default_patch_size or getattr(self.pi3, "patch_size", None))
         patch_start_idx = latents.get("patch_start_idx", default_patch_start_idx or getattr(self.pi3, "patch_start_idx", None))
-        return build_pi3_latent_volume(
-            latents,
-            default_patch_size=patch_size,
-            default_patch_start_idx=patch_start_idx,
+        
+        if patch_size is None:
+            raise ValueError(
+                "patch_size must be provided to build Pi3 latent volume (set via configure_pi3_adapters or latents['patch_size'])."
+            )
+        if patch_start_idx is None:
+            raise ValueError(
+                "patch_start_idx must be provided to build Pi3 latent volume (set via configure_pi3_adapters or latents['patch_start_idx'])."
+            )
+
+        patch_h = latents['hw'][0] // patch_size
+        patch_w = latents['hw'][1] // patch_size
+        tokens = latents['hidden'][:, patch_start_idx:, :]
+        tokens = tokens.view(
+            latents['batch'],
+            latents['frames'],
+            patch_h,
+            patch_w,
+            tokens.size(-1),
         )
+        # Trainable permutation operation
+        return tokens.permute(0, 4, 1, 2, 3).contiguous()
 
     def prepare_condition(
         self,
@@ -175,18 +286,46 @@ class Pi3RecoverLayer(nn.Module):
         default_patch_size: Optional[int] = None,
         default_patch_start_idx: Optional[int] = None,
     ) -> Tuple[Optional[torch.Tensor], int]:
-        patch_size = default_patch_size or getattr(self.pi3, "patch_size", None)
-        patch_start_idx = default_patch_start_idx or getattr(self.pi3, "patch_start_idx", None)
-        return prepare_pi3_condition(
-            video_condition,
-            cond_latent,
-            device=device,
-            latent_adapter=latent_adapter,
-            use_pi3_condition=use_pi3_condition,
-            concat_method=concat_method,
-            default_patch_size=patch_size,
-            default_patch_start_idx=patch_start_idx,
-        )
+        """
+        Prepare Pi3 condition with trainable interpolation and conv3d.
+        """
+        if video_condition is None or not use_pi3_condition:
+            return None, 0
+
+        cond = video_condition
+        if isinstance(cond, dict):
+            cond = self.build_latent_volume(
+                cond,
+                default_patch_size=default_patch_size or getattr(self.pi3, "patch_size", None),
+                default_patch_start_idx=default_patch_start_idx or getattr(self.pi3, "patch_start_idx", None),
+            )
+        if cond is None:
+            return None, 0
+        if isinstance(cond, list):
+            if len(cond) == 0:
+                return None, 0
+            cond = cond[0]
+        if cond.dim() == 4:
+            cond = cond.unsqueeze(0)
+        if cond.dim() != 5:
+            raise ValueError(
+                "video_condition must have shape (C, F, H, W) or (B, C, F, H, W).")
+        cond = cond.to(device=device, dtype=cond_latent.dtype)
+
+        target_size = (cond_latent.shape[1], cond_latent.shape[2],
+                       cond_latent.shape[3])
+        
+        # Trainable interpolation operation
+        if cond.shape[-3:] != target_size:
+            cond = F.interpolate(
+                cond, size=target_size, mode="trilinear", align_corners=False)
+
+        # Trainable conv3d operation
+        conv_output = latent_adapter(cond) if latent_adapter is not None else cond
+        conv_output = conv_output.contiguous()
+
+        logger.debug("Prepared Pi3 condition with shape %s", conv_output.shape)
+        return conv_output.squeeze(0), conv_output.shape[1]
 
     def recover_latents(
         self,
@@ -196,12 +335,81 @@ class Pi3RecoverLayer(nn.Module):
         recover_adapter: Optional[torch.nn.Module] = None,
         flatten_to_frames: bool = False,
     ) -> Optional[torch.Tensor]:
-        return recover_pi3_latents(
-            pi3_latent,
-            target_size,
-            recover_adapter=recover_adapter,
-            flatten_to_frames=flatten_to_frames,
-        )
+        """
+        Recover Pi3 latents with trainable interpolation, conv3d, and permutation.
+        """
+        if pi3_latent is None:
+            return None
+        if isinstance(pi3_latent, list):
+            if len(pi3_latent) == 0:
+                return None
+            pi3_latent = pi3_latent[0]
+
+        logger.debug("Pi3 latent before recovery shape: %s",
+                      getattr(pi3_latent, "shape", None))
+
+        # Use instance recover_adapter if not provided
+        adapter = recover_adapter if recover_adapter is not None else self.recover_adapter
+        
+        if adapter is None:
+            return pi3_latent
+
+        processed_latent = pi3_latent
+        if processed_latent.dim() == 4:
+            processed_latent = processed_latent.unsqueeze(0)
+        if processed_latent.dim() != 5:
+            return None
+
+        try:
+            target_device = next(adapter.parameters()).device
+        except StopIteration:
+            target_device = processed_latent.device
+        processed_latent = processed_latent.to(target_device)
+
+        # Trainable interpolation operation
+        if processed_latent.shape[-3:] != target_size:
+            processed_latent = F.interpolate(
+                processed_latent,
+                size=target_size,
+                mode="trilinear",
+                align_corners=False,
+            )
+
+        if processed_latent.shape[1] != adapter.in_channels:
+            in_ch = processed_latent.shape[1]
+            exp_ch = adapter.in_channels
+            if exp_ch % in_ch == 0:
+                repeat_factor = exp_ch // in_ch
+                processed_latent = processed_latent.repeat(1, repeat_factor, 1, 1, 1)
+            elif in_ch > exp_ch:
+                processed_latent = processed_latent[:, :exp_ch]
+            else:
+                pad_ch = exp_ch - in_ch
+                pad = torch.zeros(
+                    (processed_latent.shape[0], pad_ch, *processed_latent.shape[2:]),
+                    device=processed_latent.device,
+                    dtype=processed_latent.dtype,
+                )
+                processed_latent = torch.cat([processed_latent, pad], dim=1)
+
+        # Trainable conv3d operation
+        recovered = adapter(processed_latent)
+
+        if flatten_to_frames:
+            batch_dim = recovered.shape[0]
+            channel_dim = recovered.shape[1]
+            frame_count = recovered.shape[2]
+            spatial_h, spatial_w = recovered.shape[3], recovered.shape[4]
+            # Trainable permutation operation
+            recovered = recovered.permute(2, 0, 3, 4, 1).contiguous().view(
+                frame_count,
+                batch_dim,
+                spatial_h * spatial_w,
+                channel_dim,
+            )
+            return recovered.unsqueeze(1) if recovered.dim() == 3 else recovered
+
+        return recovered.squeeze(0) if recovered.shape[0] == 1 else recovered
 
     def decode_latent_sequence(self, pi3_latent: Optional[torch.Tensor]) -> Optional[Dict[str, Any]]:
         if self.pi3 is None or pi3_latent is None:
