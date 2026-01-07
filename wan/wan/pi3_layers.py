@@ -202,10 +202,11 @@ class Pi3RecoverLayer(nn.Module):
     Includes trainable interpolation, conv3d, and permutation operations.
     """
 
-    def __init__(self, pi3_model, recover_adapter: Optional[torch.nn.Module] = None) -> None:
+    def __init__(self, pi3_model, recover_adapter: Optional[torch.nn.Module] = None, latent_adapter: Optional[torch.nn.Module] = None) -> None:
         super().__init__()
         self.pi3 = pi3_model
         self.recover_adapter = recover_adapter
+        self.latent_adapter = latent_adapter
         self._pi3_shape: Optional[Tuple[int, int, int]] = None
         self._pi3_hw: Optional[Tuple[int, int]] = None
 
@@ -320,8 +321,9 @@ class Pi3RecoverLayer(nn.Module):
             cond = F.interpolate(
                 cond, size=target_size, mode="trilinear", align_corners=False)
 
-        # Trainable conv3d operation
-        conv_output = latent_adapter(cond) if latent_adapter is not None else cond
+        # Trainable conv3d operation - use parameter if provided, else instance variable
+        adapter = latent_adapter if latent_adapter is not None else self.latent_adapter
+        conv_output = adapter(cond) if adapter is not None else cond
         conv_output = conv_output.contiguous()
 
         logger.debug("Prepared Pi3 condition with shape %s", conv_output.shape)
