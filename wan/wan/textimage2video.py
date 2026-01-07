@@ -583,13 +583,11 @@ class WanTI2V:
                 (
                     pi3_condition_adapted,
                     condition_channels,
-                ) = recover_layer.prepare_condition(
-                    video_condition,
-                    cond_latent,
-                    device=self.device,
-                    latent_adapter=self.latent_adapter,
+                ) = recover_layer(
+                    mode="condition",
+                    video_condition=video_condition,
+                    cond_latent=cond_latent,
                     use_pi3_condition=self.use_pi3_condition,
-                    concat_method=concat_method,
                     default_patch_size=getattr(self, "pi3_patch_size", None),
                     default_patch_start_idx=getattr(self, "pi3_patch_start_idx", None),
                 )
@@ -814,10 +812,13 @@ class WanTI2V:
                     logging.debug("Pi3 recovery target frames: %s", target_frames)
                     recover_layer = getattr(self, "pi3_recover_layer", None)
                     if recover_layer is not None:
-                        pi3_decoded = recover_layer.recover_latents(
-                            pi3_latent,
-                            (target_frames, patch_h, patch_w),
+                        recover_layer.configure_adapters(
                             recover_adapter=getattr(self, "pi3_recover_adapter", None),
+                        )
+                        pi3_decoded = recover_layer(
+                            mode="recover",
+                            pi3_latent=pi3_latent,
+                            target_size=(target_frames, patch_h, patch_w),
                             flatten_to_frames=True,
                         )
                     else:

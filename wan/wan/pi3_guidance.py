@@ -46,7 +46,7 @@ class Pi3GuidedTI2V(nn.Module):
         else:
             self.pi3 = None
         self.stitching_layer = Pi3StitchingLayer(self.pi3, self.device)
-        self.recover_layer = Pi3RecoverLayer(self.pi3)
+        self.recover_layer = Pi3RecoverLayer(self.pi3, device=self.device)
 
         device_id = (self.device.index or 0) if self.device.type == "cuda" else 0
         self.wan = WanTI2V(
@@ -70,10 +70,27 @@ class Pi3GuidedTI2V(nn.Module):
                 patch_size=self.pi3.patch_size,
                 patch_start_idx=self.pi3.patch_start_idx,
             )
-            # Set adapters on the layer instances to make them trainable
-            self.stitching_layer.latent_adapter = self.wan.latent_adapter
-            self.recover_layer.latent_adapter = self.wan.latent_adapter
-            self.recover_layer.recover_adapter = self.wan.pi3_recover_adapter
+            self.stitching_layer.configure_adapter(self.wan.latent_adapter)
+            self.recover_layer.configure_adapters(
+                latent_adapter=self.wan.latent_adapter,
+                recover_adapter=self.wan.pi3_recover_adapter,
+            )
+
+    def forward(
+        self,
+        prompt: str,
+        image,
+        enable_grad: bool = False,
+        decode_pi3: bool = False,
+        **kwargs
+    ) -> Dict[str, Any]:
+        return self.generate_with_3d(
+            prompt,
+            image,
+            enable_grad=enable_grad,
+            decode_pi3=decode_pi3,
+            **kwargs,
+        )
 
     def generate_with_3d(
         self,
@@ -92,12 +109,21 @@ class Pi3GuidedTI2V(nn.Module):
             latents = latents.copy()
             latents["patch_size"] = self.pi3.patch_size
             latents["patch_start_idx"] = self.pi3.patch_start_idx
-            # Cache metadata through the module to keep state in the layer.
-            self.recover_layer(None, latents_meta=latents)
+            self.recover_layer(
+                mode="decode",
+                pi3_latent=None,
+                latents_meta=latents,
+                cache_metadata=True,
+            )
 
             video_condition = latents
         else:
-            self.recover_layer(None, latents_meta=None)
+            self.recover_layer(
+                mode="decode",
+                pi3_latent=None,
+                latents_meta=None,
+                cache_metadata=True,
+            )
         if enable_grad:
             kwargs.setdefault("offload_model", False)
         generated = self.wan.generate(
@@ -118,7 +144,12 @@ class Pi3GuidedTI2V(nn.Module):
             pi3_latent = None
         pi3_preds = None
         if decode_pi3 and pi3_latent is not None:
-            pi3_preds = self.recover_layer(pi3_latent, cache_metadata=False)
+            pi3_preds = self.recover_layer(
+                mode="decode",
+                pi3_latent=pi3_latent,
+                latents_meta=None,
+                cache_metadata=False,
+            )
         return {
             "video": video,
             "rgb_latent": rgb_latent,
@@ -139,7 +170,7 @@ class Pi3GuidedTI2V(nn.Module):
         **kwargs,
     ) -> Dict[str, Any]:
         decode_pi3 = kwargs.pop("decode_pi3", gt_points is not None)
-        outputs = self.generate_with_3d(
+        outputs = self.forward(
             prompt,
             image,
             enable_grad=True,
