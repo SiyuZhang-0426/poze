@@ -21,18 +21,17 @@ MIN_RESHAPE_DIMS = 3
 class Pi3StitchingLayer(nn.Module):
     """
     Handle padding and tensor preparation so images align with Pi3 patch sizing.
-    Includes trainable interpolation and conv3d operations for building latent volumes
-    and preparing conditions.
+    All Pi3-specific trainable parameters are kept in the companion recover layer.
     """
 
-    def __init__(self, pi3_model, device: Union[torch.device, str], latent_adapter: Optional[torch.nn.Module] = None) -> None:
+    def __init__(
+        self,
+        pi3_model,
+        device: Union[torch.device, str],
+    ) -> None:
         super().__init__()
         self.pi3 = pi3_model
         self.device = torch.device(device)
-        self.latent_adapter = latent_adapter
-
-    def configure_adapter(self, latent_adapter: Optional[torch.nn.Module]) -> None:
-        self.latent_adapter = latent_adapter
 
     def _patch_size(self) -> int:
         if self.pi3 is None:
@@ -112,68 +111,71 @@ class Pi3StitchingLayer(nn.Module):
     ) -> Tuple[torch.Tensor, Any]:
         return self._prepare_image_inputs(image, use_pi3)
 
-    
-    def build_latent_volume(
-        self,
-        latents: Dict[str, Any],
-        *,
-        default_patch_size: Optional[int] = None,
-        default_patch_start_idx: Optional[int] = None,
-    ) -> torch.Tensor:
-        patch_size = latents.get("patch_size", default_patch_size or getattr(self.pi3, "patch_size", None))
-        patch_start_idx = latents.get("patch_start_idx", default_patch_start_idx or getattr(self.pi3, "patch_start_idx", None))
-        
-        if patch_size is None:
-            raise ValueError(
-                "patch_size must be provided to build Pi3 latent volume (set via configure_pi3_adapters or latents['patch_size'])."
-            )
-        if patch_start_idx is None:
-            raise ValueError(
-                "patch_start_idx must be provided to build Pi3 latent volume (set via configure_pi3_adapters or latents['patch_start_idx'])."
-            )
-
-        patch_h = latents['hw'][0] // patch_size
-        patch_w = latents['hw'][1] // patch_size
-        tokens = latents['hidden'][:, patch_start_idx:, :]
-        tokens = tokens.view(
-            latents['batch'],
-            latents['frames'],
-            patch_h,
-            patch_w,
-            tokens.size(-1),
-        )
-        return tokens.permute(0, 4, 1, 2, 3).contiguous()
-
 
 class Pi3RecoverLayer(nn.Module):
     """
-    Pi3 decoding and conditioning utilities wrapped in a single module.
+    Pi3 decoding and conditioning utilities with self-contained Conv3d adapters
+    and latent volume helpers.
     """
 
     def __init__(
         self,
         pi3_model,
-        recover_adapter: Optional[torch.nn.Module] = None,
-        latent_adapter: Optional[torch.nn.Module] = None,
         device: Optional[Union[torch.device, str]] = None,
     ) -> None:
         super().__init__()
         self.pi3 = pi3_model
-        self.recover_adapter = recover_adapter
-        self.latent_adapter = latent_adapter
+        self.recover_adapter: Optional[torch.nn.Module] = None
+        self.latent_adapter: Optional[torch.nn.Module] = None
         self.device = torch.device(device) if device is not None else None
         self._pi3_shape: Optional[Tuple[int, int, int]] = None
         self._pi3_hw: Optional[Tuple[int, int]] = None
+        self._default_patch_size: Optional[int] = None
+        self._default_patch_start_idx: Optional[int] = None
 
-    def configure_adapters(
+    def configure_pi3_adapters(
         self,
-        latent_adapter: Optional[torch.nn.Module] = None,
-        recover_adapter: Optional[torch.nn.Module] = None,
+        pi3_channel_dim: int,
+        target_channels: int,
+        *,
+        device: Optional[Union[torch.device, str]] = None,
+        default_patch_size: Optional[int] = None,
+        default_patch_start_idx: Optional[int] = None,
     ) -> None:
-        if latent_adapter is not None:
-            self.latent_adapter = latent_adapter
-        if recover_adapter is not None:
-            self.recover_adapter = recover_adapter
+        adapter_device = torch.device(device) if device is not None else (self.device or torch.device("cpu"))
+        latent_adapter = nn.Conv3d(
+            in_channels=pi3_channel_dim,
+            out_channels=target_channels,
+            kernel_size=1,
+            device=adapter_device,
+        )
+        pi3_recover_adapter = nn.Conv3d(
+            in_channels=target_channels,
+            out_channels=pi3_channel_dim,
+            kernel_size=1,
+            device=adapter_device,
+        )
+        with torch.no_grad():
+            latent_adapter.weight.zero_()
+            if latent_adapter.bias is not None:
+                latent_adapter.bias.zero_()
+            shared = min(latent_adapter.in_channels, latent_adapter.out_channels)
+            for i in range(shared):
+                latent_adapter.weight[i, i, 0, 0, 0] = 1.0
+
+            pi3_recover_adapter.weight.zero_()
+            if pi3_recover_adapter.bias is not None:
+                pi3_recover_adapter.bias.zero_()
+            shared_recover = min(pi3_recover_adapter.in_channels, pi3_recover_adapter.out_channels)
+            for i in range(shared_recover):
+                pi3_recover_adapter.weight[i, i, 0, 0, 0] = 1.0
+
+        self.latent_adapter = latent_adapter
+        self.recover_adapter = pi3_recover_adapter
+        if default_patch_size is not None:
+            self._default_patch_size = default_patch_size
+        if default_patch_start_idx is not None:
+            self._default_patch_start_idx = default_patch_start_idx
 
     @staticmethod
     def _ensure_view_dim(frame_first_latent: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
@@ -190,7 +192,10 @@ class Pi3RecoverLayer(nn.Module):
         """Convert (B, F, ...) tensor into nested [batch][frame] list for per-frame access."""
         return [list(torch.unbind(batch_tensor, dim=0)) for batch_tensor in torch.unbind(tensor, dim=0)]
 
-    def cache_latent_metadata(self, latents: Optional[Dict[str, Any]]) -> None:
+    def cache_latent_metadata(
+        self,
+        latents: Optional[Dict[str, Any]]
+    ) -> None:
         self._pi3_shape = None
         self._pi3_hw = None
         if latents is None:
@@ -212,14 +217,18 @@ class Pi3RecoverLayer(nn.Module):
         default_patch_size: Optional[int] = None,
         default_patch_start_idx: Optional[int] = None,
     ) -> torch.Tensor:
-        patch_size = latents.get(
-            "patch_size",
-            default_patch_size or getattr(self.pi3, "patch_size", None),
-        )
-        patch_start_idx = latents.get(
-            "patch_start_idx",
-            default_patch_start_idx or getattr(self.pi3, "patch_start_idx", None),
-        )
+        if default_patch_size is None:
+            if self._default_patch_size is not None:
+                default_patch_size = self._default_patch_size
+            else:
+                default_patch_size = getattr(self.pi3, "patch_size", None)
+        if default_patch_start_idx is None:
+            if self._default_patch_start_idx is not None:
+                default_patch_start_idx = self._default_patch_start_idx
+            else:
+                default_patch_start_idx = getattr(self.pi3, "patch_start_idx", None)
+        patch_size = latents.get("patch_size", default_patch_size)
+        patch_start_idx = latents.get("patch_start_idx", default_patch_start_idx)
         if patch_size is None:
             raise ValueError(
                 "patch_size must be provided to build Pi3 latent volume (set via configure_pi3_adapters or latents['patch_size'])."
@@ -473,7 +482,7 @@ class Pi3RecoverLayer(nn.Module):
         pi3_latent: Optional[torch.Tensor] = None,
         target_size: Optional[Tuple[int, int, int]] = None,
         flatten_to_frames: bool = False,
-        latents_meta: Optional[Dict[str, Any]] = None,
+        latents: Optional[Dict[str, Any]] = None,
         cache_metadata: bool = True,
     ):
         if mode == "condition":
@@ -496,6 +505,6 @@ class Pi3RecoverLayer(nn.Module):
             )
         if mode == "decode":
             if cache_metadata:
-                self.cache_latent_metadata(latents_meta)
+                self.cache_latent_metadata(latents)
             return self.decode_latent_sequence(pi3_latent)
         raise ValueError(f"Unsupported mode: {mode}")

@@ -12,6 +12,7 @@ from .textimage2video import WanTI2V
 class Pi3GuidedTI2V(nn.Module):
     """
     Pipeline that freezes Pi3, adapts its latents, and optionally finetunes Wan2.2 TI2V.
+    All Pi3-specific trainable adapters are owned by the Pi3RecoverLayer.
     """
 
     def __init__(
@@ -23,7 +24,6 @@ class Pi3GuidedTI2V(nn.Module):
         device: str = "cuda",
         trainable_wan: bool = False,
         pi3_pretrained_id: str = "yyfz233/Pi3",
-        pi3_weights_only: bool = True,
         concat_method: str = "channel",
         **wan_kwargs: Any,
     ):
@@ -40,12 +40,12 @@ class Pi3GuidedTI2V(nn.Module):
                     weight = load_file(pi3_checkpoint)
                 else:
                     weight = torch.load(pi3_checkpoint, map_location=self.device, weights_only=False)
-                # weights_only avoids executing pickled code; disable only if the checkpoint requires it.
                 self.pi3.load_state_dict(weight)
             self.pi3.eval().requires_grad_(False)
         else:
             self.pi3 = None
-        self.stitching_layer = Pi3StitchingLayer(self.pi3, self.device)
+        
+        self.stitching_layer = Pi3StitchingLayer(self.pi3, device=self.device)
         self.recover_layer = Pi3RecoverLayer(self.pi3, device=self.device)
 
         device_id = (self.device.index or 0) if self.device.type == "cuda" else 0
@@ -63,17 +63,14 @@ class Pi3GuidedTI2V(nn.Module):
         )
         if self.use_pi3:
             # Pi3 decoder latents concatenate the last two blocks, giving 2 * dec_embed_dim channels.
-            # The adapter expects that full volume as input before projecting into the VAE latent space.
-            pi3_channel_dim = 2 * self.pi3.dec_embed_dim
-            self.wan.configure_pi3_adapters(
-                pi3_channel_dim,
-                patch_size=self.pi3.patch_size,
-                patch_start_idx=self.pi3.patch_start_idx,
-            )
-            self.stitching_layer.configure_adapter(self.wan.latent_adapter)
-            self.recover_layer.configure_adapters(
-                latent_adapter=self.wan.latent_adapter,
-                recover_adapter=self.wan.pi3_recover_adapter,
+            pi3_embed_dim = 2 * self.pi3.dec_embed_dim
+            target_channels = self.wan.vae.model.z_dim
+            self.recover_layer.configure_pi3_adapters(
+                pi3_channel_dim=pi3_embed_dim,
+                target_channels=target_channels,
+                device=self.device,
+                default_patch_size=self.pi3.patch_size,
+                default_patch_start_idx=self.pi3.patch_start_idx,
             )
 
     def forward(
@@ -102,30 +99,15 @@ class Pi3GuidedTI2V(nn.Module):
     ) -> Dict[str, Any]:
         imgs, pil_image = self.stitching_layer(image, self.use_pi3)
         video_condition = None
-        # Reset per-call cache; used only to decode outputs from this generation.
         if self.use_pi3:
             with torch.no_grad():
                 latents = self.pi3(imgs)
-            latents = latents.copy()
-            latents["patch_size"] = self.pi3.patch_size
-            latents["patch_start_idx"] = self.pi3.patch_start_idx
-            self.recover_layer(
-                mode="decode",
-                pi3_latent=None,
-                latents_meta=latents,
-                cache_metadata=True,
-            )
-
+            self.recover_layer.cache_latent_metadata(latents)
             video_condition = latents
-        else:
-            self.recover_layer(
-                mode="decode",
-                pi3_latent=None,
-                latents_meta=None,
-                cache_metadata=True,
-            )
+
         if enable_grad:
             kwargs.setdefault("offload_model", False)
+        
         generated = self.wan.generate(
             prompt,
             img=pil_image,
@@ -136,24 +118,20 @@ class Pi3GuidedTI2V(nn.Module):
         )
         if isinstance(generated, dict):
             video = generated.get("video")
-            rgb_latent = generated.get("rgb_latent")
             pi3_latent = generated.get("pi3_latent")
         else:
             video = generated
-            rgb_latent = None
             pi3_latent = None
         pi3_preds = None
         if decode_pi3 and pi3_latent is not None:
             pi3_preds = self.recover_layer(
                 mode="decode",
                 pi3_latent=pi3_latent,
-                latents_meta=None,
+                latents=None,
                 cache_metadata=False,
             )
         return {
             "video": video,
-            "rgb_latent": rgb_latent,
-            "pi3_latent": pi3_latent,
             "pi3_preds": pi3_preds,
         }
 

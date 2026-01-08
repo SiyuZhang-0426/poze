@@ -29,7 +29,6 @@ from .utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 from .utils.pipeline_utils import (
     align_patch_embedding_for_conditioning,
     configure_model,
-    create_pi3_adapters,
     pi3_recovery_dims,
     prepare_pi3_condition,
     recover_pi3_latents,
@@ -93,8 +92,6 @@ class WanTI2V:
         self.trainable = trainable
         self.latent_adapter = None
         self.pi3_recover_adapter = None
-        self.pi3_patch_size = None
-        self.pi3_patch_start_idx = None
         self.use_pi3_condition = use_pi3_condition
         valid_concat = {"channel", "frame", "width", "height"}
         if concat_method not in valid_concat:
@@ -147,20 +144,6 @@ class WanTI2V:
 
         self.sample_neg_prompt = config.sample_neg_prompt
         self.pi3_recover_layer = pi3_recover_layer
-
-    def configure_pi3_adapters(
-        self,
-        pi3_channel_dim: int,
-        patch_size: Optional[int] = None,
-        patch_start_idx: Optional[int] = None,
-    ) -> None:
-        self.latent_adapter, self.pi3_recover_adapter = create_pi3_adapters(
-            pi3_channel_dim, self.vae.model.z_dim, self.device
-        )
-        if patch_size is not None:
-            self.pi3_patch_size = patch_size
-        if patch_start_idx is not None:
-            self.pi3_patch_start_idx = patch_start_idx
 
     def recover_pi3_latents(
         self,
@@ -812,9 +795,6 @@ class WanTI2V:
                     logging.debug("Pi3 recovery target frames: %s", target_frames)
                     recover_layer = getattr(self, "pi3_recover_layer", None)
                     if recover_layer is not None:
-                        recover_layer.configure_adapters(
-                            recover_adapter=getattr(self, "pi3_recover_adapter", None),
-                        )
                         pi3_decoded = recover_layer(
                             mode="recover",
                             pi3_latent=pi3_latent,

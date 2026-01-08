@@ -24,7 +24,6 @@ def _add_repo_to_path() -> Path:
 
 REPO_ROOT = _add_repo_to_path()
 
-import torch
 from pi3.utils.basic import write_ply
 from wan import configs
 from wan.pi3_guidance import Pi3GuidedTI2V
@@ -34,7 +33,11 @@ from wan.utils.utils import save_video, str2bool
 PI3_CONF_THRESHOLD = 0.5
 
 
-def save_pi3(outputs: dict, save_path: Path, image_path: str) -> None:
+def save_pi3(
+    outputs: dict,
+    save_path: Path,
+    image_path: str
+) -> None:
     pi3_out = outputs.get("pi3_preds")
     if pi3_out is None:
         logging.warning("Pi3 predictions unavailable; skipping save_pi3.")
@@ -166,12 +169,6 @@ def _parse_args() -> argparse.Namespace:
         help="Path to save the generated video (mp4)."
     )
     parser.add_argument(
-        "--save-latents",
-        type=Path,
-        default=None,
-        help="Optional path to torch.save the returned latents dict."
-    )
-    parser.add_argument(
         "--save-pi3",
         type=Path,
         default=None,
@@ -233,15 +230,6 @@ def main():
         normalize=True,
         value_range=(-1, 1),
     )
-
-    if args.save_latents:
-        args.save_latents.parent.mkdir(parents=True, exist_ok=True)
-        latents_payload = {
-            "rgb_latent": outputs.get("rgb_latent"),
-            "pi3_latent": outputs.get("pi3_latent"),
-        }
-        torch.save(latents_payload, args.save_latents)
-        logging.info("Saved latents to %s", args.save_latents)
 
     if args.save_pi3:
         save_pi3(outputs=outputs, save_path=args.save_pi3, image_path=args.image)

@@ -1,7 +1,9 @@
+import logging
+from copy import deepcopy
+from functools import partial
+
 import torch
 import torch.nn as nn
-from functools import partial
-from copy import deepcopy
 
 from .dinov2.layers import Mlp
 from ..utils.geometry import homogenize_points
@@ -12,6 +14,9 @@ from .layers.transformer_head import TransformerDecoder, LinearPts3d
 from .layers.camera_head import CameraHead
 from .dinov2.hub.backbones import dinov2_vitl14, dinov2_vitl14_reg
 from huggingface_hub import PyTorchModelHubMixin
+
+
+logger = logging.getLogger(__name__)
 
 class Pi3(nn.Module, PyTorchModelHubMixin):
     def __init__(
@@ -234,7 +239,6 @@ class Pi3(nn.Module, PyTorchModelHubMixin):
         imgs = (imgs - self.image_mean) / self.image_std
 
         B, N, _, H, W = imgs.shape
-        patch_h, patch_w = H // 14, W // 14
         
         # encode by dinov2
         imgs = imgs.reshape(B*N, _, H, W)
@@ -245,8 +249,8 @@ class Pi3(nn.Module, PyTorchModelHubMixin):
 
         hidden, pos = self.decode(hidden, N, H, W)
 
-        print("Shape of pi3 hidden before stitch layers: ", hidden.shape)
-        print("Shape of pi3 position embedding before stitch layers: ", pos.shape)
+        logger.debug("Shape of pi3 hidden before stitch layers: %s", hidden.shape)
+        logger.debug("Shape of pi3 position embedding before stitch layers: %s", pos.shape)
 
         return dict(
             hidden=hidden,
@@ -254,6 +258,8 @@ class Pi3(nn.Module, PyTorchModelHubMixin):
             hw=(H, W),
             frames=N,
             batch=B,
+            patch_size=self.patch_size,
+            patch_start_idx=self.patch_start_idx,
         )
 
     def original_forward(self, imgs):

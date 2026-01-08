@@ -130,44 +130,6 @@ def align_patch_embedding_for_conditioning(
     model.patch_embedding = new_patch
 
 
-def create_pi3_adapters(
-    pi3_channel_dim: int,
-    target_channels: int,
-    device: torch.device,
-):
-    latent_adapter = torch.nn.Conv3d(
-        in_channels=pi3_channel_dim,
-        out_channels=target_channels,
-        kernel_size=1,
-        device=device,
-    )
-    pi3_recover_adapter = torch.nn.Conv3d(
-        in_channels=target_channels,
-        out_channels=pi3_channel_dim,
-        kernel_size=1,
-        device=device,
-    )
-    with torch.no_grad():
-        latent_adapter.weight.zero_()
-        if latent_adapter.bias is not None:
-            latent_adapter.bias.zero_()
-        shared = min(latent_adapter.in_channels, latent_adapter.out_channels)
-        for i in range(shared):
-            latent_adapter.weight[i, i, 0, 0, 0] = 1.0
-
-        pi3_recover_adapter.weight.zero_()
-        if pi3_recover_adapter.bias is not None:
-            pi3_recover_adapter.bias.zero_()
-        shared_recover = min(
-            pi3_recover_adapter.in_channels,
-            pi3_recover_adapter.out_channels,
-        )
-        for i in range(shared_recover):
-            pi3_recover_adapter.weight[i, i, 0, 0, 0] = 1.0
-
-    return latent_adapter, pi3_recover_adapter
-
-
 def build_pi3_latent_volume(
     latents: dict,
     *,
