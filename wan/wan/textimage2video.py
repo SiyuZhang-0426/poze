@@ -54,6 +54,7 @@ class WanTI2V:
         trainable=False,
         concat_method: str = "channel",
         pi3_recover_layer=None,
+        pi3_stitching_layer=None,
     ):
         r"""
         Initializes the Wan text-to-video generation model components.
@@ -129,7 +130,8 @@ class WanTI2V:
             init_on_cpu=self.init_on_cpu,
             device=self.device,
             param_dtype=self.param_dtype,
-            trainable=trainable)
+            trainable=trainable
+        )
         align_patch_embedding_for_conditioning(
             self.model,
             self.vae.model.z_dim,
@@ -144,6 +146,7 @@ class WanTI2V:
 
         self.sample_neg_prompt = config.sample_neg_prompt
         self.pi3_recover_layer = pi3_recover_layer
+        self.pi3_stitching_layer = pi3_stitching_layer
 
     def recover_pi3_latents(
         self,
@@ -158,23 +161,25 @@ class WanTI2V:
             flatten_to_frames=flatten_to_frames,
         )
 
-    def generate(self,
-                 input_prompt,
-                 img=None,
-                 size=(1280, 704),
-                 max_area=704 * 1280,
-                 frame_num=81,
-                 shift=5.0,
-                 sample_solver='unipc',
-                 sampling_steps=50,
-                 guide_scale=5.0,
-                 n_prompt="",
-                 seed=-1,
-                 offload_model=True,
-                 extra_context=None,
-                 video_condition=None,
-                 enable_grad=False,
-                 return_latents: bool = False):
+    def generate(
+        self,
+        input_prompt,
+        img=None,
+        size=(1280, 704),
+        max_area=704 * 1280,
+        frame_num=81,
+        shift=5.0,
+        sample_solver='unipc',
+        sampling_steps=50,
+        guide_scale=5.0,
+        n_prompt="",
+        seed=-1,
+        offload_model=True,
+        extra_context=None,
+        video_condition=None,
+        enable_grad=False,
+        return_latents: bool = False
+    ):
         r"""
         Generates video frames from text prompt using diffusion process.
 
@@ -552,7 +557,6 @@ class WanTI2V:
 
         z = self.vae.encode([img])
         cond_latent = z[0]
-        logging.debug("RGB latent shape: %s", tuple(cond_latent.shape))
 
         fused_latent = cond_latent
         pi3_condition_adapted = None
@@ -561,13 +565,12 @@ class WanTI2V:
         latent_frames = (frame_count - 1) // self.vae_stride[0] + 1
         concat_method = getattr(self, "concat_method", "channel")
         if video_condition is not None and self.use_pi3_condition:
-            recover_layer = getattr(self, "pi3_recover_layer", None)
-            if recover_layer is not None:
+            stitching_layer = getattr(self, "pi3_stitching_layer", None)
+            if stitching_layer is not None:
                 (
                     pi3_condition_adapted,
                     condition_channels,
-                ) = recover_layer(
-                    mode="condition",
+                ) = stitching_layer(
                     video_condition=video_condition,
                     cond_latent=cond_latent,
                     use_pi3_condition=self.use_pi3_condition,
@@ -588,12 +591,7 @@ class WanTI2V:
                     default_patch_size=getattr(self, "pi3_patch_size", None),
                     default_patch_start_idx=getattr(self, "pi3_patch_start_idx", None),
                 )
-        pi3_condition_shape = (
-            tuple(pi3_condition_adapted.shape)
-            if pi3_condition_adapted is not None
-            else "none"
-        )
-        logging.debug("Pi3 condition shape: %s", pi3_condition_shape)
+
 
         if pi3_condition_adapted is not None:
             if concat_method == "channel":
@@ -792,7 +790,6 @@ class WanTI2V:
                         videos,
                         default_patch_size=getattr(self, "pi3_patch_size", None),
                     )
-                    logging.debug("Pi3 recovery target frames: %s", target_frames)
                     recover_layer = getattr(self, "pi3_recover_layer", None)
                     if recover_layer is not None:
                         pi3_decoded = recover_layer(
@@ -806,11 +803,6 @@ class WanTI2V:
                             pi3_latent,
                             (target_frames, patch_h, patch_w),
                             flatten_to_frames=True,
-                        )
-                    if pi3_decoded is not None:
-                        logging.info(
-                            "Pi3 latents recovered with frame-first layout (F, B, H * W, C): %s",
-                            tuple(pi3_decoded.shape),
                         )
 
         output_video = videos[0] if self.rank == 0 else None

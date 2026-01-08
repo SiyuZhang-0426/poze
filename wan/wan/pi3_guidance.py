@@ -5,14 +5,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from pi3.models.pi3 import Pi3
-from .pi3_layers import Pi3RecoverLayer, Pi3StitchingLayer
+from .pi3_layers import Pi3RecoverLayer, Pi3StitchingLayer, prepare_image_inputs
 from .textimage2video import WanTI2V
 
 
 class Pi3GuidedTI2V(nn.Module):
     """
     Pipeline that freezes Pi3, adapts its latents, and optionally finetunes Wan2.2 TI2V.
-    All Pi3-specific trainable adapters are owned by the Pi3RecoverLayer.
     """
 
     def __init__(
@@ -45,7 +44,7 @@ class Pi3GuidedTI2V(nn.Module):
         else:
             self.pi3 = None
         
-        self.stitching_layer = Pi3StitchingLayer(self.pi3, device=self.device)
+        self.stitching_layer = Pi3StitchingLayer(device=self.device)
         self.recover_layer = Pi3RecoverLayer(self.pi3, device=self.device)
 
         device_id = (self.device.index or 0) if self.device.type == "cuda" else 0
@@ -59,18 +58,23 @@ class Pi3GuidedTI2V(nn.Module):
             use_pi3_condition=self.use_pi3,
             concat_method=concat_method,
             pi3_recover_layer=self.recover_layer,
+            pi3_stitching_layer=self.stitching_layer,
             **wan_kwargs,
         )
         if self.use_pi3:
-            # Pi3 decoder latents concatenate the last two blocks, giving 2 * dec_embed_dim channels.
             pi3_embed_dim = 2 * self.pi3.dec_embed_dim
             target_channels = self.wan.vae.model.z_dim
-            self.recover_layer.configure_pi3_adapters(
+            self.stitching_layer.configure_condition_adapter(
                 pi3_channel_dim=pi3_embed_dim,
                 target_channels=target_channels,
                 device=self.device,
                 default_patch_size=self.pi3.patch_size,
                 default_patch_start_idx=self.pi3.patch_start_idx,
+            )
+            self.recover_layer.configure_recover_adapter(
+                pi3_channel_dim=pi3_embed_dim,
+                target_channels=target_channels,
+                device=self.device,
             )
 
     def forward(
@@ -97,7 +101,7 @@ class Pi3GuidedTI2V(nn.Module):
         decode_pi3: bool = False,
         **kwargs
     ) -> Dict[str, Any]:
-        imgs, pil_image = self.stitching_layer(image, self.use_pi3)
+        imgs, pil_image = prepare_image_inputs(self.pi3, image, self.use_pi3, self.device)
         video_condition = None
         if self.use_pi3:
             with torch.no_grad():
@@ -123,6 +127,7 @@ class Pi3GuidedTI2V(nn.Module):
             video = generated
             pi3_latent = None
         pi3_preds = None
+        logging.info(f"pi3_latent shape before recover: {pi3_latent.shape if pi3_latent is not None else None}")
         if decode_pi3 and pi3_latent is not None:
             pi3_preds = self.recover_layer(
                 mode="decode",

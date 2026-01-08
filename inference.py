@@ -1,10 +1,3 @@
-#!/usr/bin/env python3
-"""
-Pi3-guided Wan TI2V inference script.
-
-This wraps the README example into a runnable CLI that loads Pi3 and Wan,
-generates a video guided by Pi3 3D latents, and optionally saves latents.
-"""
 import argparse
 import logging
 import re

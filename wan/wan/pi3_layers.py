@@ -1,4 +1,3 @@
-import logging
 import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -10,148 +9,119 @@ import torchvision.transforms.functional as TF
 
 from pi3.utils.basic import load_images_as_tensor
 
-logger = logging.getLogger(__name__)
-
 EXPECTED_POINT_TENSOR_DIMS = 5
-# Pi3 decoder expects views; keep per-call decode to a single frame to avoid mixing frames as views.
 FRAMES_PER_DECODE = 1
 MIN_RESHAPE_DIMS = 3
 
 
-class Pi3StitchingLayer(nn.Module):
-    """
-    Handle padding and tensor preparation so images align with Pi3 patch sizing.
-    All Pi3-specific trainable parameters are kept in the companion recover layer.
-    """
+def _normalize_pil(image):
+    if hasattr(image, "mode") and image.mode == "RGB":
+        return image
+    return image.convert("RGB")
 
-    def __init__(
-        self,
-        pi3_model,
-        device: Union[torch.device, str],
-    ) -> None:
-        super().__init__()
-        self.pi3 = pi3_model
-        self.device = torch.device(device)
 
-    def _patch_size(self) -> int:
-        if self.pi3 is None:
-            raise ValueError("Pi3 model is required to determine patch size.")
-        return self.pi3.patch_size
+def _patch_size_from_model(pi3_model) -> int:
+    if pi3_model is None:
+        raise ValueError("Pi3 model is required to determine patch size.")
+    return pi3_model.patch_size
 
-    def ensure_divisible_size(self, image):
-        """
-        Pad a PIL image so height and width are divisible by the Pi3 patch size.
-        """
-        patch = self._patch_size()
-        target_w = math.ceil(image.width / patch) * patch
-        target_h = math.ceil(image.height / patch) * patch
-        if target_w == image.width and target_h == image.height:
-            return image
-        padding = (0, 0, target_w - image.width, target_h - image.height)
-        return TF.pad(image, padding, fill=0)
 
-    def pad_tensor_divisible(self, tensor: torch.Tensor) -> torch.Tensor:
-        patch = self._patch_size()
-        leading_shape = tensor.shape[:-3]
-        c, h, w = tensor.shape[-3:]
-        target_h = math.ceil(h / patch) * patch
-        target_w = math.ceil(w / patch) * patch
-        if target_h == h and target_w == w:
-            return tensor
-        padded = F.pad(tensor.reshape(-1, c, h, w), (0, target_w - w, 0, target_h - h))
-        return padded.reshape(*leading_shape, c, target_h, target_w)
+def ensure_divisible_size(image, patch_size: int):
+    target_w = math.ceil(image.width / patch_size) * patch_size
+    target_h = math.ceil(image.height / patch_size) * patch_size
+    if target_w == image.width and target_h == image.height:
+        return image
+    padding = (0, 0, target_w - image.width, target_h - image.height)
+    return TF.pad(image, padding, fill=0)
 
-    def _normalize_pil(self, image):
-        return image if hasattr(image, "mode") and image.mode == "RGB" else image.convert("RGB")
 
-    def _prepare_image_inputs(self, image, use_pi3: bool) -> Tuple[torch.Tensor, Any]:
-        if isinstance(image, (str, Path)):
-            tensor = load_images_as_tensor(str(image), interval=1)
-            if tensor.numel() == 0:
-                raise ValueError(
-                    f"No image loaded from {image}; ensure the path points to a readable .png/.jpg/.jpeg file or directory."
-                )
-            image = tensor
-        if not use_pi3 or self.pi3 is None:
-            if isinstance(image, torch.Tensor):
-                base = image
-                if base.dim() == 4:
-                    base = base[0]
-                if base.dim() != 3:
-                    raise ValueError(
-                        f"Expected image tensor with shape (C, H, W) or (N, C, H, W); got {tuple(image.shape)}"
-                    )
-                base_cpu = base if base.device.type == "cpu" else base.cpu()
-                pil = TF.to_pil_image(base_cpu)
-                tensor = base.unsqueeze(0).unsqueeze(0)
-            else:
-                pil = self._normalize_pil(image)
-                tensor = TF.to_tensor(pil).unsqueeze(0).unsqueeze(0)
-            return tensor.to(self.device), pil
+def pad_tensor_divisible(tensor: torch.Tensor, patch_size: int) -> torch.Tensor:
+    leading_shape = tensor.shape[:-3]
+    c, h, w = tensor.shape[-3:]
+    target_h = math.ceil(h / patch_size) * patch_size
+    target_w = math.ceil(w / patch_size) * patch_size
+    if target_h == h and target_w == w:
+        return tensor
+    padded = F.pad(tensor.reshape(-1, c, h, w), (0, target_w - w, 0, target_h - h))
+    return padded.reshape(*leading_shape, c, target_h, target_w)
 
+
+def prepare_image_inputs(
+    pi3_model,
+    image,
+    use_pi3: bool,
+    device: Union[torch.device, str],
+) -> Tuple[torch.Tensor, Any]:
+    target_device = torch.device(device)
+    if isinstance(image, (str, Path)):
+        tensor = load_images_as_tensor(str(image), interval=1)
+        if tensor.numel() == 0:
+            raise ValueError(
+                f"No image loaded from {image}; ensure the path points to a readable .png/.jpg/.jpeg file or directory."
+            )
+        image = tensor
+    if not use_pi3 or pi3_model is None:
         if isinstance(image, torch.Tensor):
-            tensor = image
-            if tensor.dim() == 3:
-                tensor = tensor.unsqueeze(0)
-            if tensor.dim() == 4:
-                tensor = tensor.unsqueeze(0)
-            needs_pad = tensor.shape[-1] % self._patch_size() != 0 or tensor.shape[-2] % self._patch_size() != 0
-            if needs_pad:
-                tensor = self.pad_tensor_divisible(tensor)
-            pil = TF.to_pil_image(tensor[0, 0].cpu())
+            base = image
+            if base.dim() == 4:
+                base = base[0]
+            if base.dim() != 3:
+                raise ValueError(
+                    f"Expected image tensor with shape (C, H, W) or (N, C, H, W); got {tuple(image.shape)}"
+                )
+            base_cpu = base if base.device.type == "cpu" else base.cpu()
+            pil = TF.to_pil_image(base_cpu)
+            tensor = base.unsqueeze(0).unsqueeze(0)
         else:
-            pil = self.ensure_divisible_size(self._normalize_pil(image))
+            pil = _normalize_pil(image)
             tensor = TF.to_tensor(pil).unsqueeze(0).unsqueeze(0)
-        return tensor.to(self.device), pil
-    
-    def forward(
-        self,
-        image,
-        use_pi3: bool,
-    ) -> Tuple[torch.Tensor, Any]:
-        return self._prepare_image_inputs(image, use_pi3)
+        return tensor.to(target_device), pil
+
+    patch_size = _patch_size_from_model(pi3_model)
+    if isinstance(image, torch.Tensor):
+        tensor = image
+        if tensor.dim() == 3:
+            tensor = tensor.unsqueeze(0)
+        if tensor.dim() == 4:
+            tensor = tensor.unsqueeze(0)
+        needs_pad = tensor.shape[-1] % patch_size != 0 or tensor.shape[-2] % patch_size != 0
+        if needs_pad:
+            tensor = pad_tensor_divisible(tensor, patch_size)
+        pil = TF.to_pil_image(tensor[0, 0].cpu())
+    else:
+        pil = ensure_divisible_size(_normalize_pil(image), patch_size)
+        tensor = TF.to_tensor(pil).unsqueeze(0).unsqueeze(0)
+    return tensor.to(target_device), pil
 
 
-class Pi3RecoverLayer(nn.Module):
-    """
-    Pi3 decoding and conditioning utilities with self-contained Conv3d adapters
-    and latent volume helpers.
-    """
-
+class Pi3StitchingLayer(nn.Module):
     def __init__(
         self,
-        pi3_model,
         device: Optional[Union[torch.device, str]] = None,
     ) -> None:
         super().__init__()
-        self.pi3 = pi3_model
-        self.recover_adapter: Optional[torch.nn.Module] = None
-        self.latent_adapter: Optional[torch.nn.Module] = None
         self.device = torch.device(device) if device is not None else None
-        self._pi3_shape: Optional[Tuple[int, int, int]] = None
-        self._pi3_hw: Optional[Tuple[int, int]] = None
+        self.latent_adapter: Optional[torch.nn.Module] = None
         self._default_patch_size: Optional[int] = None
         self._default_patch_start_idx: Optional[int] = None
 
-    def configure_pi3_adapters(
+    def configure_condition_adapter(
         self,
         pi3_channel_dim: int,
         target_channels: int,
-        *,
         device: Optional[Union[torch.device, str]] = None,
         default_patch_size: Optional[int] = None,
         default_patch_start_idx: Optional[int] = None,
     ) -> None:
+        logging.info(
+            f"Now Configuring Pi3StitchingLayer, pi3_channel_dim={pi3_channel_dim}, "
+            f"target_channels={target_channels}, device={device}, "
+            f"default_patch_size={default_patch_size}, default_patch_start_idx={default_patch_start_idx}"
+        )
         adapter_device = torch.device(device) if device is not None else (self.device or torch.device("cpu"))
         latent_adapter = nn.Conv3d(
             in_channels=pi3_channel_dim,
             out_channels=target_channels,
-            kernel_size=1,
-            device=adapter_device,
-        )
-        pi3_recover_adapter = nn.Conv3d(
-            in_channels=target_channels,
-            out_channels=pi3_channel_dim,
             kernel_size=1,
             device=adapter_device,
         )
@@ -162,80 +132,27 @@ class Pi3RecoverLayer(nn.Module):
             shared = min(latent_adapter.in_channels, latent_adapter.out_channels)
             for i in range(shared):
                 latent_adapter.weight[i, i, 0, 0, 0] = 1.0
-
-            pi3_recover_adapter.weight.zero_()
-            if pi3_recover_adapter.bias is not None:
-                pi3_recover_adapter.bias.zero_()
-            shared_recover = min(pi3_recover_adapter.in_channels, pi3_recover_adapter.out_channels)
-            for i in range(shared_recover):
-                pi3_recover_adapter.weight[i, i, 0, 0, 0] = 1.0
-
         self.latent_adapter = latent_adapter
-        self.recover_adapter = pi3_recover_adapter
         if default_patch_size is not None:
             self._default_patch_size = default_patch_size
         if default_patch_start_idx is not None:
             self._default_patch_start_idx = default_patch_start_idx
 
-    @staticmethod
-    def _ensure_view_dim(frame_first_latent: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
-        """
-        Guarantee an explicit view dimension (V) for frame-first Pi3 latents.
-        Converts (F, HW, C) to (F, 1, HW, C) when the view axis is missing.
-        """
-        if frame_first_latent is not None and frame_first_latent.dim() == 3:
-            return frame_first_latent.unsqueeze(1)
-        return frame_first_latent
-
-    @staticmethod
-    def _nested_frames_list(tensor: torch.Tensor):
-        """Convert (B, F, ...) tensor into nested [batch][frame] list for per-frame access."""
-        return [list(torch.unbind(batch_tensor, dim=0)) for batch_tensor in torch.unbind(tensor, dim=0)]
-
-    def cache_latent_metadata(
-        self,
-        latents: Optional[Dict[str, Any]]
-    ) -> None:
-        self._pi3_shape = None
-        self._pi3_hw = None
-        if latents is None:
-            return
-        hidden = latents.get("hidden")
-        if hidden is not None:
-            self._pi3_shape = hidden.shape
-        self._pi3_hw = latents.get("hw")
-
-    def _expected_hw_tokens(self) -> Optional[int]:
-        if self._pi3_shape is None or self.pi3 is None:
-            return None
-        return max(1, self._pi3_shape[1] - self.pi3.patch_start_idx)
-
     def build_latent_volume(
         self,
         latents: Dict[str, Any],
-        *,
-        default_patch_size: Optional[int] = None,
-        default_patch_start_idx: Optional[int] = None,
     ) -> torch.Tensor:
-        if default_patch_size is None:
-            if self._default_patch_size is not None:
-                default_patch_size = self._default_patch_size
-            else:
-                default_patch_size = getattr(self.pi3, "patch_size", None)
-        if default_patch_start_idx is None:
-            if self._default_patch_start_idx is not None:
-                default_patch_start_idx = self._default_patch_start_idx
-            else:
-                default_patch_start_idx = getattr(self.pi3, "patch_start_idx", None)
+        default_patch_size = self._default_patch_size
+        default_patch_start_idx = self._default_patch_start_idx
         patch_size = latents.get("patch_size", default_patch_size)
         patch_start_idx = latents.get("patch_start_idx", default_patch_start_idx)
         if patch_size is None:
             raise ValueError(
-                "patch_size must be provided to build Pi3 latent volume (set via configure_pi3_adapters or latents['patch_size'])."
+                "patch_size must be provided to build Pi3 latent volume (set via configure_condition_adapter or latents['patch_size'])."
             )
         if patch_start_idx is None:
             raise ValueError(
-                "patch_start_idx must be provided to build Pi3 latent volume (set via configure_pi3_adapters or latents['patch_start_idx'])."
+                "patch_start_idx must be provided to build Pi3 latent volume (set via configure_condition_adapter or latents['patch_start_idx'])."
             )
 
         patch_h = latents["hw"][0] // patch_size
@@ -256,19 +173,13 @@ class Pi3RecoverLayer(nn.Module):
         cond_latent: torch.Tensor,
         *,
         use_pi3_condition: bool,
-        default_patch_size: Optional[int] = None,
-        default_patch_start_idx: Optional[int] = None,
     ) -> Tuple[Optional[torch.Tensor], int]:
         if video_condition is None or not use_pi3_condition:
             return None, 0
 
         cond = video_condition
         if isinstance(cond, dict):
-            cond = self.build_latent_volume(
-                cond,
-                default_patch_size=default_patch_size,
-                default_patch_start_idx=default_patch_start_idx,
-            )
+            cond = self.build_latent_volume(cond)
         if cond is None:
             return None, 0
         if isinstance(cond, list):
@@ -303,8 +214,102 @@ class Pi3RecoverLayer(nn.Module):
         conv_output = adapter(cond) if adapter is not None else cond
         conv_output = conv_output.contiguous()
 
-        logger.debug("Prepared Pi3 condition with shape %s", conv_output.shape)
         return conv_output.squeeze(0), conv_output.shape[1]
+
+    def forward(
+        self,
+        video_condition: Any,
+        cond_latent: torch.Tensor,
+        *,
+        use_pi3_condition: bool = True,
+        default_patch_size: Optional[int] = None,
+        default_patch_start_idx: Optional[int] = None,
+    ) -> Tuple[Optional[torch.Tensor], int]:
+        return self.prepare_condition(
+            video_condition,
+            cond_latent,
+            use_pi3_condition=use_pi3_condition,
+            default_patch_size=default_patch_size,
+            default_patch_start_idx=default_patch_start_idx,
+        )
+
+
+class Pi3RecoverLayer(nn.Module):
+    """
+    Pi3 decoding and conditioning utilities with self-contained Conv3d adapters
+    and latent volume helpers.
+    """
+
+    def __init__(
+        self,
+        pi3_model,
+        device: Optional[Union[torch.device, str]] = None,
+    ) -> None:
+        super().__init__()
+        self.pi3 = pi3_model
+        self.recover_adapter: Optional[torch.nn.Module] = None
+        self.device = torch.device(device) if device is not None else None
+        self._pi3_shape: Optional[Tuple[int, int, int]] = None
+        self._pi3_hw: Optional[Tuple[int, int]] = None
+    
+    def configure_recover_adapter(
+        self,
+        pi3_channel_dim: int,
+        target_channels: int,
+        device: Optional[Union[torch.device, str]] = None,
+    ) -> None:
+        logging.info(
+            f"Now Configuring Pi3RecoverLayer, pi3_channel_dim={pi3_channel_dim}, "
+            f"target_channels={target_channels}, device={device}"
+        )
+        adapter_device = torch.device(device) if device is not None else (self.device or torch.device("cpu"))
+        pi3_recover_adapter = nn.Conv3d(
+            in_channels=target_channels,
+            out_channels=pi3_channel_dim,
+            kernel_size=1,
+            device=adapter_device,
+        )
+        with torch.no_grad():
+            pi3_recover_adapter.weight.zero_()
+            if pi3_recover_adapter.bias is not None:
+                pi3_recover_adapter.bias.zero_()
+            shared_recover = min(pi3_recover_adapter.in_channels, pi3_recover_adapter.out_channels)
+            for i in range(shared_recover):
+                pi3_recover_adapter.weight[i, i, 0, 0, 0] = 1.0
+        self.recover_adapter = pi3_recover_adapter
+
+    @staticmethod
+    def _ensure_view_dim(frame_first_latent: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
+        """
+        Guarantee an explicit view dimension (V) for frame-first Pi3 latents.
+        Converts (F, HW, C) to (F, 1, HW, C) when the view axis is missing.
+        """
+        if frame_first_latent is not None and frame_first_latent.dim() == 3:
+            return frame_first_latent.unsqueeze(1)
+        return frame_first_latent
+
+    @staticmethod
+    def _nested_frames_list(tensor: torch.Tensor):
+        """Convert (B, F, ...) tensor into nested [batch][frame] list for per-frame access."""
+        return [list(torch.unbind(batch_tensor, dim=0)) for batch_tensor in torch.unbind(tensor, dim=0)]
+
+    def cache_latent_metadata(
+        self,
+        latents: Optional[Dict[str, Any]]
+    ) -> None:
+        self._pi3_shape = None
+        self._pi3_hw = None
+        if latents is None:
+            return
+        hidden = latents.get("hidden")
+        if hidden is not None:
+            self._pi3_shape = hidden.shape
+        self._pi3_hw = latents.get("hw")
+
+    def _expected_hw_tokens(self) -> Optional[int]:
+        if self._pi3_shape is None or self.pi3 is None:
+            return None
+        return max(1, self._pi3_shape[1] - self.pi3.patch_start_idx)
 
     def recover_latents(
         self,
@@ -319,11 +324,6 @@ class Pi3RecoverLayer(nn.Module):
             if len(pi3_latent) == 0:
                 return None
             pi3_latent = pi3_latent[0]
-
-        logger.debug(
-            "Pi3 latent before recovery shape: %s",
-            getattr(pi3_latent, "shape", None),
-        )
 
         adapter = self.recover_adapter
         if adapter is None:
@@ -467,34 +467,18 @@ class Pi3RecoverLayer(nn.Module):
                     conf_list = self._nested_frames_list(conf)
                     decoded["conf_list"] = conf_list
                 decoded["points_list"] = points_list
-            logger.debug("Decoded Pi3 latents into shapes: %s", {k: v.shape if torch.is_tensor(v) else type(v) for k, v in decoded.items()})
             return decoded
 
     def forward(
         self,
         *,
         mode: str,
-        video_condition: Any = None,
-        cond_latent: Optional[torch.Tensor] = None,
-        use_pi3_condition: bool = True,
-        default_patch_size: Optional[int] = None,
-        default_patch_start_idx: Optional[int] = None,
         pi3_latent: Optional[torch.Tensor] = None,
         target_size: Optional[Tuple[int, int, int]] = None,
         flatten_to_frames: bool = False,
         latents: Optional[Dict[str, Any]] = None,
         cache_metadata: bool = True,
     ):
-        if mode == "condition":
-            if cond_latent is None:
-                raise ValueError("cond_latent must be provided for mode='condition'.")
-            return self.prepare_condition(
-                video_condition,
-                cond_latent,
-                use_pi3_condition=use_pi3_condition,
-                default_patch_size=default_patch_size,
-                default_patch_start_idx=default_patch_start_idx,
-            )
         if mode == "recover":
             if pi3_latent is None or target_size is None:
                 raise ValueError("pi3_latent and target_size must be provided for mode='recover'.")

@@ -16,8 +16,6 @@ from .dinov2.hub.backbones import dinov2_vitl14, dinov2_vitl14_reg
 from huggingface_hub import PyTorchModelHubMixin
 
 
-logger = logging.getLogger(__name__)
-
 class Pi3(nn.Module, PyTorchModelHubMixin):
     def __init__(
             self,
@@ -45,7 +43,6 @@ class Pi3(nn.Module, PyTorchModelHubMixin):
             self.position_getter = PositionGetter()
         else:
             raise NotImplementedError
-        
 
         # ----------------------
         #        Decoder
@@ -248,9 +245,8 @@ class Pi3(nn.Module, PyTorchModelHubMixin):
             hidden = hidden["x_norm_patchtokens"]
 
         hidden, pos = self.decode(hidden, N, H, W)
-
-        logger.debug("Shape of pi3 hidden before stitch layers: %s", hidden.shape)
-        logger.debug("Shape of pi3 position embedding before stitch layers: %s", pos.shape)
+        logging.info(f"Shape of pi3 hidden before stitching: {hidden.shape}")
+        logging.info(f"Shape of pi3 pos before stitching: {pos.shape}")
 
         return dict(
             hidden=hidden,

@@ -1,4 +1,3 @@
-import logging
 import types
 from typing import List, Optional, Tuple, Union
 
@@ -167,7 +166,6 @@ def prepare_pi3_condition(
     device: torch.device,
     latent_adapter,
     use_pi3_condition: bool,
-    concat_method: str,
     default_patch_size: Optional[int],
     default_patch_start_idx: Optional[int],
 ) -> Tuple[Optional[torch.Tensor], int]:
@@ -203,7 +201,6 @@ def prepare_pi3_condition(
     conv_output = latent_adapter(cond) if latent_adapter is not None else cond
     conv_output = conv_output.contiguous()
 
-    logging.debug("Prepared Pi3 condition with shape %s", conv_output.shape)
     return conv_output.squeeze(0), conv_output.shape[1]
 
 
@@ -220,9 +217,6 @@ def recover_pi3_latents(
         if len(pi3_latent) == 0:
             return None
         pi3_latent = pi3_latent[0]
-
-    logging.debug("Pi3 latent before recovery shape: %s",
-                  getattr(pi3_latent, "shape", None))
 
     if recover_adapter is None:
         return pi3_latent
