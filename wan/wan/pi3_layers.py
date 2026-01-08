@@ -1,4 +1,5 @@
 import math
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -171,7 +172,6 @@ class Pi3StitchingLayer(nn.Module):
         self,
         video_condition: Any,
         cond_latent: torch.Tensor,
-        *,
         use_pi3_condition: bool,
     ) -> Tuple[Optional[torch.Tensor], int]:
         if video_condition is None or not use_pi3_condition:
@@ -220,17 +220,12 @@ class Pi3StitchingLayer(nn.Module):
         self,
         video_condition: Any,
         cond_latent: torch.Tensor,
-        *,
-        use_pi3_condition: bool = True,
-        default_patch_size: Optional[int] = None,
-        default_patch_start_idx: Optional[int] = None,
+        use_pi3_condition: bool = True
     ) -> Tuple[Optional[torch.Tensor], int]:
         return self.prepare_condition(
             video_condition,
             cond_latent,
-            use_pi3_condition=use_pi3_condition,
-            default_patch_size=default_patch_size,
-            default_patch_start_idx=default_patch_start_idx,
+            use_pi3_condition=use_pi3_condition
         )
 
 

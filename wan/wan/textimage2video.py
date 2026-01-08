@@ -573,9 +573,7 @@ class WanTI2V:
                 ) = stitching_layer(
                     video_condition=video_condition,
                     cond_latent=cond_latent,
-                    use_pi3_condition=self.use_pi3_condition,
-                    default_patch_size=getattr(self, "pi3_patch_size", None),
-                    default_patch_start_idx=getattr(self, "pi3_patch_start_idx", None),
+                    use_pi3_condition=self.use_pi3_condition
                 )
             else:
                 (
@@ -587,9 +585,7 @@ class WanTI2V:
                     device=self.device,
                     latent_adapter=self.latent_adapter,
                     use_pi3_condition=self.use_pi3_condition,
-                    concat_method=concat_method,
-                    default_patch_size=getattr(self, "pi3_patch_size", None),
-                    default_patch_start_idx=getattr(self, "pi3_patch_start_idx", None),
+                    concat_method=concat_method
                 )
 
 
