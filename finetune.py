@@ -1,15 +1,14 @@
-#!/usr/bin/env python3
-"""
-Minimal Wan TI2V finetuning loop guided by Pi3 latents.
-
-This script mirrors the README training snippet by exposing a small CLI that
-loads Wan and Pi3, computes video/point losses, and updates Wan parameters.
-"""
 import argparse
 import logging
+import math
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple
+
+import torch
+import torch.nn.functional as F
+from safetensors.torch import load_file
 
 
 def _add_repo_to_path() -> Path:
@@ -23,512 +22,369 @@ def _add_repo_to_path() -> Path:
 
 REPO_ROOT = _add_repo_to_path()
 
-import torch  # noqa: E402
-from PIL import Image  # noqa: E402
-from safetensors.torch import load_file  # noqa: E402
-from torch.utils.data import DataLoader, Dataset  # noqa: E402
-from wan import configs  # noqa: E402
-from wan.pi3_guidance import Pi3GuidedTI2V  # noqa: E402
-from wan.utils.utils import str2bool  # noqa: E402
+from wan import configs
+from wan.pi3_guidance import Pi3GuidedTI2V
+from wan.utils.utils import str2bool
+
+
+@dataclass
+class DatasetSample:
+    prompt: str
+    image_path: Path
+    video_path: Optional[Path]
+    latent_path: Optional[Path]
+
+
+def _load_tensor(path: Path) -> torch.Tensor:
+    ext = path.suffix.lower()
+    if ext in {".pt", ".pth"}:
+        obj = torch.load(path, map_location="cpu")
+        if isinstance(obj, torch.Tensor):
+            return obj
+        if isinstance(obj, dict) and "tensor" in obj:
+            return obj["tensor"]
+        raise ValueError(f"Unsupported tensor format in {path}")
+    if ext == ".safetensors":
+        data = load_file(path)
+        if "encoded_video" in data:
+            return data["encoded_video"]
+        if len(data) == 1:
+            return next(iter(data.values()))
+        raise ValueError(f"Safetensors file {path} missing 'encoded_video' key")
+    raise ValueError(f"Unsupported tensor extension for {path}")
+
+
+def _load_single_video(path: Path) -> torch.Tensor:
+    import imageio.v2 as imageio
+    import numpy as np
+
+    frames_np: List[torch.Tensor] = []
+    reader = imageio.get_reader(path.as_posix())
+    for frame in reader:
+        frame_tensor = torch.from_numpy(frame).float()
+        frame_tensor = frame_tensor.permute(2, 0, 1)
+        frames_np.append(frame_tensor)
+    if not frames_np:
+        raise RuntimeError(f"No frames read from {path}")
+    video = torch.stack(frames_np, dim=1)
+    video = video / 127.5 - 1.0
+    return video
+
+
+def _discover_latent_dir(dataset_root: Path) -> Optional[Path]:
+    base = dataset_root / "cache" / "video_latent" / "wan-i2v"
+    if not base.exists():
+        return None
+    candidates = [p for p in base.iterdir() if p.is_dir()]
+    if not candidates:
+        return None
+    candidates.sort()
+    return candidates[0]
+
+
+def _build_dataset(
+    dataset_root: Path,
+    prompt_file: str,
+    video_list_file: str,
+    image_dir: str,
+    latent_dir: Optional[Path],
+) -> List[DatasetSample]:
+    prompt_path = dataset_root / prompt_file
+    video_list_path = dataset_root / video_list_file
+    image_root = dataset_root / image_dir
+
+    with open(prompt_path, "r", encoding="utf-8") as f:
+        prompts = [line.strip() for line in f.readlines() if line.strip()]
+    with open(video_list_path, "r", encoding="utf-8") as f:
+        rel_videos = [line.strip() for line in f.readlines() if line.strip()]
+
+    if len(prompts) != len(rel_videos):
+        raise ValueError(
+            f"Prompt count ({len(prompts)}) and video list count ({len(rel_videos)}) do not match."
+        )
+
+    samples: List[DatasetSample] = []
+    for prompt, rel in zip(prompts, rel_videos):
+        video_path = dataset_root / rel
+        stem = video_path.stem
+        image_path = image_root / f"{stem}.png"
+        latent_path = None
+        if latent_dir is not None:
+            candidate = latent_dir / f"{stem}.safetensors"
+            if candidate.exists():
+                latent_path = candidate
+        samples.append(
+            DatasetSample(
+                prompt=prompt,
+                image_path=image_path,
+                video_path=video_path if video_path.exists() else None,
+                latent_path=latent_path,
+            )
+        )
+    return samples
+
+
+def _psnr(mse: float) -> float:
+    if mse <= 0.0:
+        return float("inf")
+    return 10.0 * math.log10(4.0 / mse)
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Finetune Wan TI2V with Pi3-guided latents."
+        description="Finetune Wan2.2 TI2V with optional Pi3 guidance."
     )
+
     parser.add_argument(
         "--wan-ckpt-dir",
         required=True,
-        help="Directory containing Wan2.2 TI2V checkpoints."
+        help="Directory containing Wan2.2 TI2V checkpoints.",
     )
     parser.add_argument(
         "--wan-config",
         default="ti2v-5B",
         choices=list(configs.WAN_CONFIGS.keys()),
-        help="Wan TI2V config key to load."
+        help="Wan TI2V config key to load.",
     )
     parser.add_argument(
         "--pi3-checkpoint",
         default=None,
-        help="Optional local Pi3 checkpoint path; if omitted, pulls the pretrained id."
+        help="Optional local Pi3 checkpoint path; if omitted, pulls the pretrained id.",
     )
     parser.add_argument(
         "--pi3-pretrained-id",
         default="yyfz233/Pi3",
-        help="HuggingFace model id for Pi3 when no checkpoint is provided."
+        help="HuggingFace model id for Pi3 when no checkpoint is provided.",
     )
     parser.add_argument(
         "--use-pi3",
         type=str2bool,
         default=True,
-        help="Enable Pi3-guided conditioning; disable to finetune Wan without Pi3 inputs."
+        help="Enable Pi3-guided conditioning; set false to run Wan TI2V without Pi3.",
     )
     parser.add_argument(
         "--concat-method",
         default="channel",
         choices=("channel", "frame", "width", "height"),
-        help="How to fuse Pi3 latents with RGB latents: channel (default), frame, width, or height.",
+        help="How to fuse Pi3 latents with RGB latents.",
     )
+
     parser.add_argument(
-        "--prompt",
-        default=None,
-        help="Text prompt to condition Wan generation."
-    )
-    parser.add_argument(
-        "--image",
-        default=None,
-        help="Reference image path used for TI2V conditioning."
-    )
-    parser.add_argument(
-        "--dataset-root",
-        type=Path,
-        default=None,
-        help="Optional 4DNeX-style dataset root. When set, prompts/images/videos are drawn from this directory instead of single-sample inputs.",
-    )
-    parser.add_argument(
-        "--dataset-prompt-file",
-        default="prompts.txt",
-        help="Relative prompt file inside dataset root."
-    )
-    parser.add_argument(
-        "--dataset-video-list",
-        default="videos.txt",
-        help="Relative video list file inside dataset root."
-    )
-    parser.add_argument(
-        "--dataset-image-dir",
-        default="first_frames",
-        help="Relative directory of first-frame images inside dataset root."
-    )
-    parser.add_argument(
-        "--dataset-latent-dir",
-        type=Path,
-        default=None,
-        help="Optional explicit path to Wan VAE latents (.safetensors). Defaults to the first cache directory under dataset root.",
-    )
-    parser.add_argument(
-        "--dataset-use-latents",
-        type=str2bool,
-        default=True,
-        help="Prefer Wan VAE latents from the dataset cache for reconstruction loss when available.",
-    )
-    parser.add_argument(
-        "--gt-video",
-        default=None,
-        help="Path to a torch tensor (.pt/.pth) ground-truth video shaped like the Wan output (C, F, H, W)."
-    )
-    parser.add_argument(
-        "--gt-points",
-        default=None,
-        help="Path to a torch tensor (.pt/.pth) point cloud shaped like Pi3 outputs (B, N, H, W, 3)."
+        "--device",
+        default="cuda",
+        help="Device string passed to Pi3GuidedTI2V, e.g., cuda or cpu.",
     )
     parser.add_argument(
         "--frame-num",
         type=int,
         default=None,
-        help="Number of frames to generate. Defaults to config.frame_num."
-    )
-    parser.add_argument(
-        "--video-weight",
-        type=float,
-        default=1.0,
-        help="Weight for video reconstruction loss."
-    )
-    parser.add_argument(
-        "--latent-weight",
-        type=float,
-        default=1.0,
-        help="Weight for latent reconstruction loss when cached Wan latents are available."
-    )
-    parser.add_argument(
-        "--point-weight",
-        type=float,
-        default=1.0,
-        help="Weight for point cloud reconstruction loss."
-    )
-    parser.add_argument(
-        "--lr",
-        type=float,
-        default=1e-5,
-        help="Learning rate for Wan finetuning."
-    )
-    parser.add_argument(
-        "--weight-decay",
-        type=float,
-        default=0.0,
-        help="Weight decay for the optimizer."
-    )
-    parser.add_argument(
-        "--steps",
-        type=int,
-        default=10,
-        help="Number of optimization steps to run."
-    )
-    parser.add_argument(
-        "--log-every",
-        type=int,
-        default=1,
-        help="How often (in steps) to log losses."
-    )
-    parser.add_argument(
-        "--save-every",
-        type=int,
-        default=0,
-        help="Save a Wan checkpoint every N steps (0 disables interim checkpoints)."
-    )
-    parser.add_argument(
-        "--save-dir",
-        type=Path,
-        default=REPO_ROOT / "finetune_outputs",
-        help="Directory to store checkpoints."
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=1,
-        help="Batch size for dataset finetuning. Only batch size 1 is supported."
-    )
-    parser.add_argument(
-        "--num-workers",
-        type=int,
-        default=0,
-        help="Number of worker processes for the dataset DataLoader."
-    )
-    parser.add_argument(
-        "--no-shuffle",
-        action="store_true",
-        help="Disable dataset shuffling during finetuning."
-    )
-    parser.add_argument(
-        "--device",
-        default="cuda",
-        help="Device string passed to Pi3GuidedTI2V, e.g., cuda or cpu."
+        help="Number of frames to generate. Defaults to config.frame_num.",
     )
     parser.add_argument(
         "--offload-model",
         type=str2bool,
         default=False,
-        help="Offload Wan to CPU between steps. Keep False for finetuning."
+        help="Offload Wan to CPU between steps. Keep false for fastest training.",
+    )
+
+    parser.add_argument(
+        "--steps",
+        type=int,
+        required=True,
+        help="Number of optimization steps.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        help="Effective batch size per optimization step.",
+    )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=1e-5,
+        help="Learning rate for Wan optimizer.",
+    )
+    parser.add_argument(
+        "--video-weight",
+        type=float,
+        default=1.0,
+        help="Loss weight for video reconstruction.",
+    )
+    parser.add_argument(
+        "--latent-weight",
+        type=float,
+        default=0.0,
+        help="Loss weight for latent supervision (dataset mode).",
+    )
+    parser.add_argument(
+        "--point-weight",
+        type=float,
+        default=0.0,
+        help="Loss weight for Pi3 point supervision.",
     )
     parser.add_argument(
         "--amp",
         type=str2bool,
         default=True,
-        help="Use torch.cuda.amp for mixed-precision training when available."
+        help="Enable automatic mixed precision (AMP).",
     )
     parser.add_argument(
         "--max-grad-norm",
         type=float,
-        default=None,
-        help="Optional gradient clipping norm."
+        default=0.0,
+        help="Max gradient norm for clipping; 0 disables clipping.",
     )
     parser.add_argument(
-        "--seed",
+        "--log-every",
         type=int,
-        default=None,
-        help="Optional random seed for reproducibility."
+        default=10,
+        help="Log training metrics every N steps.",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--save-every",
+        type=int,
+        default=0,
+        help="Save Wan checkpoints every N steps; 0 disables intermediate saves.",
+    )
+    parser.add_argument(
+        "--save-dir",
+        type=Path,
+        default=REPO_ROOT / "finetune_outputs",
+        help="Directory where Wan checkpoints are saved.",
+    )
 
+    parser.add_argument(
+        "--prompt",
+        default=None,
+        help="Prompt for single-example finetuning.",
+    )
+    parser.add_argument(
+        "--image",
+        default=None,
+        help="Reference image for single-example finetuning.",
+    )
+    parser.add_argument(
+        "--gt-video",
+        type=Path,
+        default=None,
+        help="Ground truth video tensor (.pt/.pth) shaped (C, F, H, W).",
+    )
+    parser.add_argument(
+        "--gt-points",
+        type=Path,
+        default=None,
+        help="Ground truth Pi3 points tensor (.pt/.pth) shaped (B, F, H, W, 3).",
+    )
 
-def _load_tensor(path: Optional[str], device: Union[torch.device, str]):
-    """
-    Load a tensor from disk.
+    parser.add_argument(
+        "--dataset-root",
+        type=Path,
+        default=None,
+        help="Root directory of preprocessed 4DNeX Wan-style dataset (e.g., ./data/wan21).",
+    )
+    parser.add_argument(
+        "--dataset-prompt-file",
+        default="prompts.txt",
+        help="Name of prompt file inside dataset root.",
+    )
+    parser.add_argument(
+        "--dataset-video-list",
+        default="videos.txt",
+        help="Name of video list file inside dataset root.",
+    )
+    parser.add_argument(
+        "--dataset-image-dir",
+        default="first_frames",
+        help="Subdirectory containing first-frame images.",
+    )
+    parser.add_argument(
+        "--dataset-latent-dir",
+        type=Path,
+        default=None,
+        help="Optional explicit directory of Wan VAE latents; when omitted, auto-discovers under cache/video_latent/wan-i2v.",
+    )
+    parser.add_argument(
+        "--dataset-use-latents",
+        type=str2bool,
+        default=True,
+        help="Use cached Wan VAE latents when available; otherwise load RGB videos.",
+    )
 
-    Args:
-        path: Path to a serialized tensor file. If None, returns None.
-        device: Device mapping passed to torch.load.
+    args = parser.parse_args()
 
-    Returns:
-        Loaded torch.Tensor or None when path is None.
-
-    Raises:
-        FileNotFoundError: If the file does not exist.
-        ValueError: If the loaded object is not a tensor.
-    """
-    if path is None:
-        return None
-    tensor_path = Path(path)
-    if not tensor_path.exists():
-        raise FileNotFoundError(f"Tensor file not found: {tensor_path}")
-    tensor = torch.load(tensor_path, map_location=device)
-    if not isinstance(tensor, torch.Tensor):
-        raise ValueError(f"Loaded object from {tensor_path} is not a tensor.")
-    return tensor
-
-
-def _validate_targets(gt_video, gt_points, gt_latent=None):
-    """
-    Ensure at least one supervision signal is provided.
-
-    Raises:
-        ValueError: If all supervision targets are None.
-    """
-    if gt_video is None and gt_points is None and gt_latent is None:
-        raise ValueError("At least one of --gt-video, --gt-points, or cached latents must be provided.")
-
-
-class FourDNeXDataset(Dataset):
-    """
-    Lightweight 4DNeX loader that mirrors the preprocessed layout produced by
-    `4DNeX/build_wan_dataset.py`.
-
-    Expected structure under ``root``:
-    - prompts.txt: one prompt per line
-    - videos.txt: one relative video path per line (e.g., ``videos/xxx.mp4``)
-    - first_frames/: optional PNGs matching video stems
-    - cache/video_latent/wan-i2v/<resolution>/: optional Wan VAE latents (*.safetensors)
-    """
-
-    def __init__(
-        self,
-        root: Union[str, Path],
-        prompt_file: str = "prompts.txt",
-        video_list: str = "videos.txt",
-        image_dir: str = "first_frames",
-        latent_dir: Optional[Union[str, Path]] = None,
-        use_latents: bool = True,
-        prompt_suffix: str = "POINTMAP_STYLE.",
-    ) -> None:
-        super().__init__()
-        self.root = Path(root)
-        self.prompts = self._read_lines(self.root / prompt_file)
-        self.videos = [self.root / v for v in self._read_lines(self.root / video_list)]
-        self.image_dir = self.root / image_dir
-        self.latent_dir = self._resolve_latent_dir(latent_dir)
-        self.use_latents = use_latents
-        self.prompt_suffix = prompt_suffix.strip()
-
-        if len(self.prompts) != len(self.videos):
-            raise ValueError(
-                f"Dataset file count mismatch: {len(self.prompts)} prompts vs {len(self.videos)} videos."
+    if args.dataset_root is None:
+        if args.prompt is None or args.image is None:
+            parser.error(
+                "Single-example mode requires --prompt and --image when --dataset-root is not provided."
             )
-        if not self.prompts:
-            raise ValueError("No samples found in dataset.")
-
-    def _read_lines(self, path: Path) -> List[str]:
-        if not path.exists():
-            raise FileNotFoundError(f"Dataset file not found: {path}")
-        with path.open("r", encoding="utf-8") as f:
-            return [line.strip() for line in f.readlines() if line.strip()]
-
-    def _resolve_latent_dir(self, latent_dir: Optional[Union[str, Path]]) -> Optional[Path]:
-        if latent_dir is not None:
-            latent_path = Path(latent_dir)
-            return latent_path if latent_path.exists() else None
-        candidate = self.root / "cache" / "video_latent" / "wan-i2v"
-        if candidate.exists():
-            subdirs = sorted([p for p in candidate.iterdir() if p.is_dir()])
-            if subdirs:
-                return subdirs[0]
-        return None
-
-    def __len__(self) -> int:
-        return len(self.videos)
-
-    def _load_latent(self, video_name: str) -> Optional[torch.Tensor]:
-        if self.latent_dir is None:
-            return None
-        latent_path = self.latent_dir / f"{video_name}.safetensors"
-        if not latent_path.exists():
-            return None
-        loaded = load_file(latent_path)
-        latent = loaded.get("encoded_video")
-        if latent is None:
-            return None
-        return latent.float()
-
-    def _decode_video(self, video_path: Path) -> torch.Tensor:
-        frames = None
-        # decord/torchvision are optional; import lazily to avoid hard dependencies when the dataset loader is unused.
-        try:
-            import decord
-
-            decord.bridge.set_bridge("torch")
-            reader = decord.VideoReader(uri=str(video_path))
-            frames = reader.get_batch(range(len(reader)))  # (F, H, W, 3)
-            if not torch.is_floating_point(frames):
-                frames = frames.float()
-            frames = frames.permute(3, 0, 1, 2) / 255.0
-        except ImportError:
-            frames = None
-        except Exception as err:
-            logging.warning("Decord failed to read %s (%s); falling back to torchvision.read_video", video_path, err)
-            frames = None
-        if frames is None:
-            from torchvision.io import read_video
-
-            frames, _, _ = read_video(str(video_path), output_format="TCHW")
-            frames = frames.permute(1, 0, 2, 3).float() / 255.0  # (C, F, H, W)
-        return frames * 2.0 - 1.0  # (C, F, H, W) in [-1, 1]
-
-    def _load_image(self, video_name: str, video: Optional[torch.Tensor]) -> Image.Image:
-        first_frame = self.image_dir / f"{video_name}.png"
-        if first_frame.exists():
-            return Image.open(first_frame).convert("RGB")
-        if video is not None:
-            # Keep this import local to avoid requiring torchvision when only latent supervision is used.
-            from torchvision.transforms.functional import to_pil_image
-
-            frame = ((video[:, 0] + 1) * 0.5).clamp(0, 1)
-            return to_pil_image(frame.cpu())
-        raise FileNotFoundError(f"First frame not found for {video_name} and no video available to derive it.")
-
-    def __getitem__(self, index: int) -> Dict[str, Any]:
-        prompt = self.prompts[index]
-        if self.prompt_suffix:
-            prompt = f"{prompt} {self.prompt_suffix}".strip()
-        video_path = self.videos[index]
-        video_name = video_path.stem
-
-        video_latent = self._load_latent(video_name) if self.use_latents else None
-        video_tensor = None
-        if (not self.use_latents) or video_latent is None:
-            video_tensor = self._decode_video(video_path)
-
-        frame_num = None
-        if video_latent is not None:
-            frame_num = video_latent.shape[1]
-        elif video_tensor is not None:
-            frame_num = video_tensor.shape[1]
-
-        image = self._load_image(video_name, video_tensor)
-
-        if video_latent is None and video_tensor is None:
-            raise ValueError(f"No supervision available for sample {video_name}")
-
-        return {
-            "prompt": prompt,
-            "image": image,
-            "video": video_tensor,
-            "video_latent": video_latent,
-            "frame_num": frame_num,
-            "video_path": video_path,
-        }
+        if args.gt_video is None and args.gt_points is None:
+            parser.error(
+                "Provide at least one supervision signal: --gt-video or --gt-points."
+            )
+    return args
 
 
-def _single_sample_collate(batch):
-    """
-    Pi3-guided Wan finetuning currently supports batch size 1; unwrap the single element.
-    """
-    return batch[0]
-
-
-def main():
-    args = _parse_args()
+def _setup_logger() -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="[%(asctime)s] %(levelname)s: %(message)s",
         handlers=[logging.StreamHandler(sys.stdout)],
     )
 
-    if args.seed is not None:
-        torch.manual_seed(args.seed)
-        torch.cuda.manual_seed_all(args.seed)
 
-    if args.dataset_root is None:
-        if args.prompt is None or args.image is None:
-            raise ValueError("Provide --prompt and --image or set --dataset-root for dataset finetuning.")
-    else:
-        if args.batch_size != 1:
-            raise ValueError("Only batch size 1 is supported in the current finetuning loop because Pi3-guided inputs are single-image.")
-
+def _build_guide(args: argparse.Namespace) -> Tuple[Pi3GuidedTI2V, int]:
     cfg = configs.WAN_CONFIGS[args.wan_config]
-    default_frame_num = args.frame_num if args.frame_num is not None else cfg.frame_num
-    target_device = torch.device(args.device)
-
-    dataset = None
-    dataloader = None
-    data_iter = None
-    if args.dataset_root is not None:
-        dataset = FourDNeXDataset(
-            root=args.dataset_root,
-            prompt_file=args.dataset_prompt_file,
-            video_list=args.dataset_video_list,
-            image_dir=args.dataset_image_dir,
-            latent_dir=args.dataset_latent_dir,
-            use_latents=args.dataset_use_latents,
-        )
-        dataloader = DataLoader(
-            dataset,
-            batch_size=args.batch_size,
-            shuffle=not args.no_shuffle,
-            num_workers=args.num_workers,
-            collate_fn=_single_sample_collate,
-        )
-        data_iter = iter(dataloader)
-
+    frame_num = args.frame_num if args.frame_num is not None else cfg.frame_num
     guide = Pi3GuidedTI2V(
         wan_config=cfg,
         wan_checkpoint_dir=args.wan_ckpt_dir,
         pi3_checkpoint=args.pi3_checkpoint,
         pi3_pretrained_id=args.pi3_pretrained_id,
-        device=target_device,
+        device=args.device,
         trainable_wan=True,
         use_pi3=args.use_pi3,
         concat_method=args.concat_method,
     )
-    if getattr(guide, "pi3", None) is not None:
-        guide.pi3.eval().requires_grad_(False)
-    guide.wan.model.train()
-    for extra in (getattr(guide, "latent_adapter", None), getattr(guide, "pi3_recover_adapter", None)):
-        if extra is not None:
-            extra.train()
+    return guide, frame_num
 
-    params = [p for p in guide.wan.model.parameters() if p.requires_grad]
-    for extra in (getattr(guide, "latent_adapter", None), getattr(guide, "pi3_recover_adapter", None)):
-        if extra is not None:
-            params.extend(p for p in extra.parameters() if p.requires_grad)
-    if not params:
-        raise RuntimeError(
-            "No Wan parameters are marked trainable. Ensure trainable_wan=True or unfreeze layers."
-        )
-    optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.weight_decay)
-    scaler = torch.cuda.amp.GradScaler(enabled=args.amp and torch.cuda.is_available())
+
+def _optimizer_parameters(guide: Pi3GuidedTI2V):
+    return guide.wan.model.parameters()
+
+
+def _train_single_example(args: argparse.Namespace) -> None:
+    guide, frame_num = _build_guide(args)
+    device = torch.device(args.device)
 
     gt_video = None
+    if args.gt_video is not None:
+        gt_video = _load_tensor(args.gt_video).to(device)
     gt_points = None
-    gt_latent = None
-    pil_image = None
-    if dataset is None:
-        gt_video = _load_tensor(args.gt_video, target_device)
-        gt_points = _load_tensor(args.gt_points, target_device)
-        _validate_targets(gt_video, gt_points)
-        pil_image = Image.open(args.image).convert("RGB")
+    if args.gt_points is not None:
+        gt_points = _load_tensor(args.gt_points).to(device)
 
-    args.save_dir.mkdir(parents=True, exist_ok=True)
+    optimizer = torch.optim.AdamW(
+        _optimizer_parameters(guide),
+        lr=args.lr,
+    )
+
+    scaler = torch.cuda.amp.GradScaler(enabled=bool(args.amp) and device.type == "cuda")
+
+    running_loss = 0.0
+    running_video_mse = 0.0
+    running_steps = 0
 
     for step in range(1, args.steps + 1):
-        sample = None
-        if dataset is not None:
-            try:
-                sample = next(data_iter)
-            except StopIteration:
-                data_iter = iter(dataloader)
-                sample = next(data_iter)
-            prompt = sample["prompt"]
-            pil_image = sample["image"]
-            gt_video = sample.get("video")
-            gt_latent = sample.get("video_latent")
-            gt_points = None
-            frame_num = sample.get("frame_num") or default_frame_num
-            if gt_video is not None:
-                gt_video = gt_video.to(target_device)
-            if gt_latent is not None:
-                gt_latent = gt_latent.to(target_device)
-            _validate_targets(gt_video, gt_points, gt_latent)
-        else:
-            prompt = args.prompt
-            frame_num = default_frame_num
+        optimizer.zero_grad(set_to_none=True)
 
-        optimizer.zero_grad()
-        with torch.cuda.amp.autocast(enabled=scaler.is_enabled()):
+        with torch.cuda.amp.autocast(enabled=bool(args.amp) and device.type == "cuda"):
             outputs = guide.training_step(
-                prompt=prompt,
-                image=pil_image,
+                prompt=args.prompt,
+                image=args.image,
                 gt_video=gt_video,
                 gt_points=gt_points,
-                gt_latent=gt_latent,
+                gt_latent=None,
                 video_weight=args.video_weight,
                 latent_weight=args.latent_weight,
                 point_weight=args.point_weight,
@@ -538,30 +394,192 @@ def main():
             loss = outputs["loss"]
 
         scaler.scale(loss).backward()
-        if args.max_grad_norm is not None:
+        if args.max_grad_norm and args.max_grad_norm > 0.0:
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(params, args.max_grad_norm)
+            torch.nn.utils.clip_grad_norm_(
+                _optimizer_parameters(guide), args.max_grad_norm
+            )
         scaler.step(optimizer)
         scaler.update()
 
-        if step == 1 or step % args.log_every == 0:
-            loss_items = {k: v.item() for k, v in outputs.get("losses", {}).items()}
+        loss_scalar = loss.detach().float().item()
+        running_loss += loss_scalar
+        if "video" in outputs["losses"]:
+            video_mse = outputs["losses"]["video"].detach().float().item()
+            running_video_mse += video_mse
+        running_steps += 1
+
+        if step % args.log_every == 0 or step == args.steps:
+            avg_loss = running_loss / max(running_steps, 1)
+            avg_mse = running_video_mse / max(running_steps, 1e-8)
+            psnr = _psnr(avg_mse) if running_video_mse > 0 else float("nan")
             logging.info(
-                "Step %d/%d - total_loss=%.6f details=%s",
+                "Step %d/%d | loss=%.4f | video_mse=%.4f | psnr=%.2f dB",
                 step,
                 args.steps,
-                float(loss.detach().cpu()),
-                loss_items,
+                avg_loss,
+                avg_mse,
+                psnr,
             )
+            running_loss = 0.0
+            running_video_mse = 0.0
+            running_steps = 0
 
-        should_save = args.save_every and step % args.save_every == 0
-        if should_save or step == args.steps:
-            ckpt_path = args.save_dir / f"wan_finetune_step{step}.pt"
-            logging.info("Saving Wan checkpoint to %s", ckpt_path)
+        if args.save_every and args.save_every > 0 and step % args.save_every == 0:
+            args.save_dir.mkdir(parents=True, exist_ok=True)
+            ckpt_path = args.save_dir / f"wan_step_{step:06d}.pt"
             torch.save(guide.wan.model.state_dict(), ckpt_path)
+            logging.info("Saved intermediate Wan checkpoint to %s", ckpt_path)
 
-    logging.info("Finetuning finished.")
+    args.save_dir.mkdir(parents=True, exist_ok=True)
+    final_ckpt = args.save_dir / "wan_finetuned.pt"
+    torch.save(guide.wan.model.state_dict(), final_ckpt)
+    logging.info("Saved final Wan checkpoint to %s", final_ckpt)
+
+
+def _train_dataset(args: argparse.Namespace) -> None:
+    if args.dataset_root is None:
+        raise ValueError("Dataset mode requires --dataset-root.")
+
+    guide, frame_num = _build_guide(args)
+    device = torch.device(args.device)
+
+    latent_dir = args.dataset_latent_dir
+    if latent_dir is None:
+        latent_dir = _discover_latent_dir(args.dataset_root)
+
+    samples = _build_dataset(
+        dataset_root=args.dataset_root,
+        prompt_file=args.dataset_prompt_file,
+        video_list_file=args.dataset_video_list,
+        image_dir=args.dataset_image_dir,
+        latent_dir=latent_dir,
+    )
+    if not samples:
+        raise ValueError(f"No samples found under dataset root {args.dataset_root}")
+
+    optimizer = torch.optim.AdamW(
+        _optimizer_parameters(guide),
+        lr=args.lr,
+    )
+
+    scaler = torch.cuda.amp.GradScaler(enabled=bool(args.amp) and device.type == "cuda")
+
+    running_loss = 0.0
+    running_video_mse = 0.0
+    running_steps = 0
+
+    step = 0
+    sample_index = 0
+    while step < args.steps:
+        batch_prompts: List[str] = []
+        batch_images: List[str] = []
+        batch_gt_videos: List[Optional[torch.Tensor]] = []
+        batch_gt_latents: List[Optional[torch.Tensor]] = []
+
+        for _ in range(args.batch_size):
+            s = samples[sample_index]
+            sample_index = (sample_index + 1) % len(samples)
+
+            batch_prompts.append(s.prompt)
+            batch_images.append(str(s.image_path))
+
+            gt_latent = None
+            gt_video = None
+
+            if args.dataset_use_latents and s.latent_path is not None:
+                latent = _load_tensor(s.latent_path)
+                gt_latent = latent.to(device)
+            elif s.video_path is not None:
+                gt_video = _load_single_video(s.video_path).to(device)
+
+            batch_gt_videos.append(gt_video)
+            batch_gt_latents.append(gt_latent)
+
+        optimizer.zero_grad(set_to_none=True)
+
+        total_loss = torch.zeros([], device=device)
+        total_video_mse = 0.0
+
+        for prompt, image_path, gt_video, gt_latent in zip(
+            batch_prompts, batch_images, batch_gt_videos, batch_gt_latents
+        ):
+            with torch.cuda.amp.autocast(
+                enabled=bool(args.amp) and device.type == "cuda"
+            ):
+                outputs = guide.training_step(
+                    prompt=prompt,
+                    image=image_path,
+                    gt_video=gt_video,
+                    gt_points=None,
+                    gt_latent=gt_latent,
+                    video_weight=args.video_weight,
+                    latent_weight=args.latent_weight,
+                    point_weight=args.point_weight,
+                    frame_num=frame_num,
+                    offload_model=args.offload_model,
+                )
+                loss = outputs["loss"] / args.batch_size
+            total_loss = total_loss + loss
+            if "video" in outputs["losses"]:
+                total_video_mse += (
+                    outputs["losses"]["video"].detach().float().item()
+                )
+
+        scaler.scale(total_loss).backward()
+        if args.max_grad_norm and args.max_grad_norm > 0.0:
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(
+                _optimizer_parameters(guide), args.max_grad_norm
+            )
+        scaler.step(optimizer)
+        scaler.update()
+
+        step += 1
+        loss_scalar = total_loss.detach().float().item()
+        running_loss += loss_scalar
+        running_video_mse += total_video_mse
+        running_steps += 1
+
+        if step % args.log_every == 0 or step == args.steps:
+            avg_loss = running_loss / max(running_steps, 1)
+            avg_mse = running_video_mse / max(running_steps, 1e-8)
+            psnr = _psnr(avg_mse) if running_video_mse > 0 else float("nan")
+            logging.info(
+                "Step %d/%d | loss=%.4f | video_mse=%.4f | psnr=%.2f dB",
+                step,
+                args.steps,
+                avg_loss,
+                avg_mse,
+                psnr,
+            )
+            running_loss = 0.0
+            running_video_mse = 0.0
+            running_steps = 0
+
+        if args.save_every and args.save_every > 0 and step % args.save_every == 0:
+            args.save_dir.mkdir(parents=True, exist_ok=True)
+            ckpt_path = args.save_dir / f"wan_step_{step:06d}.pt"
+            torch.save(guide.wan.model.state_dict(), ckpt_path)
+            logging.info("Saved intermediate Wan checkpoint to %s", ckpt_path)
+
+    args.save_dir.mkdir(parents=True, exist_ok=True)
+    final_ckpt = args.save_dir / "wan_finetuned.pt"
+    torch.save(guide.wan.model.state_dict(), final_ckpt)
+    logging.info("Saved final Wan checkpoint to %s", final_ckpt)
+
+
+def main():
+    args = _parse_args()
+    _setup_logger()
+    logging.info("Starting Poze finetuning with args: %s", args)
+
+    if args.dataset_root is not None:
+        _train_dataset(args)
+    else:
+        _train_single_example(args)
 
 
 if __name__ == "__main__":
     main()
+

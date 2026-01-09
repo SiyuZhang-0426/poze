@@ -112,7 +112,7 @@ class Pi3GuidedTI2V(nn.Module):
 
         if enable_grad:
             kwargs.setdefault("offload_model", False)
-        
+
         generated = self.wan.generate(
             prompt,
             img=pil_image,
@@ -123,10 +123,13 @@ class Pi3GuidedTI2V(nn.Module):
         )
         if isinstance(generated, dict):
             video = generated.get("video")
+            rgb_latent = generated.get("rgb_latent")
             pi3_latent = generated.get("pi3_latent")
         else:
             video = generated
+            rgb_latent = None
             pi3_latent = None
+
         pi3_preds = None
         logging.info(f"pi3_latent shape before recover: {pi3_latent.shape if pi3_latent is not None else None}")
         if decode_pi3 and pi3_latent is not None:
@@ -138,6 +141,8 @@ class Pi3GuidedTI2V(nn.Module):
             )
         return {
             "video": video,
+            "rgb_latent": rgb_latent,
+            "pi3_latent": pi3_latent,
             "pi3_preds": pi3_preds,
         }
 
