@@ -102,8 +102,7 @@ def align_patch_embedding_for_conditioning(
 
     if patch_embedding.in_channels == expected_channels:
         with torch.no_grad():
-            rgb_weights = weight[:, :base_channels].clone()
-            weight[:, base_channels:expected_channels] = rgb_weights
+            weight[:, base_channels:expected_channels].zero_()
         return
 
     bias = patch_embedding.bias
@@ -123,7 +122,6 @@ def align_patch_embedding_for_conditioning(
         new_patch.weight.zero_()
         rgb_weights = weight.clone()
         new_patch.weight[:, :base_channels] = rgb_weights
-        new_patch.weight[:, base_channels:expected_channels] = rgb_weights
         if bias is not None:
             new_patch.bias.copy_(bias)
     model.patch_embedding = new_patch
